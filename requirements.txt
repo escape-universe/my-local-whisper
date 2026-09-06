@@ -1,0 +1,9 @@
+faster-whisper>=1.1.0
+sounddevice>=0.4.6
+numpy>=1.26
+pynput>=1.7.7
+pystray>=0.19
+Pillow>=10.0
+pywin32>=306
+requests>=2.31
+PyYAML>=6.0

@@ -1,0 +1,19 @@
+# Dictionary — technical terms, proper nouns, product names
+# One term per line. These terms are (a) seeded into faster-whisper as the initial_prompt
+# (order = priority, Whisper accepts about 224 tokens) and (b) protected in the clean-up
+# prompt as "spell exactly like this". Lines starting with # are comments.
+#
+# Put in whatever Whisper keeps getting wrong for you: product names, place names,
+# abbreviations from your field, the names of the people you work with.
+
+# Example: tools and systems
+Nextcloud
+Thunderbird
+LibreOffice
+Ollama
+Whisper
+
+# Example: places
+Nienburg
+Leipzig
+Hannover

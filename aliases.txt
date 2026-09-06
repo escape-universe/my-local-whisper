@@ -1,0 +1,15 @@
+# Misheard spelling -> correct spelling (applied deterministically, after transcription and after clean-up)
+# Format:  Correct = heard1, heard2, ...     (word boundaries are respected, case is ignored)
+# Grows through `py whisperflow.py --calibrate`: you read the terms out loud, see what Whisper
+# makes of them, and confirm the suggestions.
+#
+# Only add variants that are not real words of their own in your context.
+
+Nextcloud = Nextclout, Next Cloud, Nextcloude
+Thunderbird = Sunderbird, Thunder Bird
+LibreOffice = Libre Office, Liebreoffice
+Ollama = Olama, Oh Lama, Olamma
+Whisper = Wisper, Wispa
+Nienburg = Nienburgh, Neuenburg
+Hannover = Hanover, Hanofer
+Leipzig = Leibzig, Leipsick

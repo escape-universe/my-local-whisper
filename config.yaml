@@ -1,0 +1,113 @@
+# my-local-whisper — configuration
+# Every value below can be changed. After editing, restart the app
+# (tray icon -> Quit, then start-whisperflow.bat).
+
+hotkey:
+  # Push-to-talk key, given as a pynput key name. Default: right Ctrl.
+  # Alternatives: "ctrl_l", "cmd" (Windows key), "f9", "scroll_lock".
+  key: "ctrl_r"
+  # hold  = hold the key down while speaking (default)
+  # toggle = press once to start, press again to stop
+  # Also switchable from the tray menu; the choice is stored in state.json and survives restarts.
+  mode: "hold"
+
+audio:
+  input_device: null      # null = system default microphone. Otherwise a device index (int) or part of its name (str). `py whisperflow.py --list-devices` shows the options.
+  samplerate: 16000       # Whisper expects 16 kHz
+  channels: 1
+  max_seconds: 3600       # Safety limit (1 h). Memory use: 16 kHz float32 = 3.8 MB per minute. When reached: a beep, a tray note, and the recording is finished cleanly.
+  # Long dictations: Whisper already transcribes WHILE you speak, as soon as more than chunk_seconds
+  # are buffered, cut at the last pause in speech. When you stop, only the remainder is left to do.
+  chunk_seconds: 25
+  chunk_silence_s: 0.45
+
+stt:
+  # large-v3-turbo: same encoder as large-v3, 4 decoder layers instead of 32.
+  # Measured on an RTX 2080 Super (4 German dictations, 50 s of audio): 3.6x faster than
+  # large-v3 at equal or slightly better word accuracy.
+  # For the older quality reference use "large-v3" (then set compute_type to "int8_float16").
+  # Without a fast GPU, try "small" — noticeably less accurate, but usable on a CPU.
+  model: "large-v3-turbo"
+  device: "auto"          # auto | cuda | cpu
+  compute_type: "float16" # turbo needs ~1.6 GB VRAM in float16 (next to Ollama's 2.1 GB: fits into 8 GB). Leaner: "int8_float16" (same speed).
+  language: null          # null = auto-detect (mixed DE/EN). "de"/"en" forces one language.
+  beam_size: 5            # 5 = quality. 1 was marginally faster in testing but mangled a product name -> stays at 5.
+  without_timestamps: true          # dictation needs no timestamps -> fewer decoder steps, identical text (measured)
+  condition_on_previous_text: false # no context carry-over between segments -> fewer hallucination loops, marginally faster
+
+llm:
+  # Any OpenAI-compatible /v1 endpoint. Local Ollama by default.
+  # IMPORTANT: use 127.0.0.1, NOT "localhost". On Windows, localhost tries IPv6 (::1) first and
+  # runs into a timeout: that costs about 2 seconds per request (measured: 2.9 s -> 0.8 s per clean-up).
+  base_url: "http://127.0.0.1:11434/v1"
+  # Also possible: any other OpenAI-compatible endpoint on your own network,
+  # e.g. a llama.cpp server on a stronger machine: "http://192.168.x.x:8080/v1"
+  model: "qwen2.5:3b-instruct"   # sized for an 8 GB VRAM budget next to Whisper. A 7B model needs more room.
+  temperature: 0.2
+  timeout_s: 20
+  keep_alive: "30m"       # keep the model warm in Ollama. On a dedicated GPU box, "-1" works.
+  enabled: true           # false = skip the clean-up, deliver the raw transcript
+
+inject:
+  # hybrid (default): the text ALWAYS goes to the clipboard. If a writable text field had focus when
+  #   you released the key AND that same window is still in front with a focused text field when the
+  #   text is ready, it is also pasted immediately (double beep).
+  #   Otherwise: clipboard only, single beep, tray note (you paste it yourself, whenever you like).
+  #   Detection uses Windows UI Automation (wf/focus.py); when in doubt it does NOT paste.
+  # clipboard_only: never paste automatically, clipboard only.
+  # clipboard: always paste immediately (the previous clipboard content is restored afterwards).
+  # sendinput: type the characters one by one (fallback for terminals).
+  method: "hybrid"
+  restore_clipboard_delay_ms: 120
+  # Per-app override of the injection method (process name without .exe -> method).
+  # Only applies to method clipboard/sendinput (hybrid and clipboard_only decide by themselves).
+  per_app_method:
+    WindowsTerminal: "sendinput"
+    cmd: "sendinput"
+    powershell: "sendinput"
+
+context:
+  # Process name (lowercase, without .exe) -> category. Anything not listed -> "default".
+  # The category picks the clean-up tone: chat keeps it casual, email a little more formal,
+  # code leaves technical terms alone.
+  app_categories:
+    slack: "chat"
+    discord: "chat"
+    telegram: "chat"
+    whatsapp: "chat"
+    olk: "email"           # new Outlook
+    outlook: "email"
+    thunderbird: "email"
+    hxoutlook: "email"
+    code: "code"
+    cursor: "code"
+    devenv: "code"
+    windowsterminal: "code"
+    idea64: "code"
+
+dictionary_path: "dictionary.txt"   # terms (names, places, products); the order is the priority for the Whisper prompt
+aliases_path: "aliases.txt"         # misheard spelling -> correct spelling; grows via `--calibrate`
+# Optional: load names from a JSON file instead of typing them into the dictionary.
+# Format: {"members": [{"name": "First Last", "aktiv": true}, ...]}. null = off.
+employees_from: null
+
+ui:
+  show_raw_first: false    # two-pass UX (not implemented yet): show the raw text first, then replace it with the cleaned one
+  notify_on_blocked_window: true   # tray note when an elevated window swallows the paste (Windows UIPI); only for method clipboard/sendinput
+  notify_on_ready: true    # tray note "Ready - press Ctrl+V" with a preview when the text was not pasted automatically
+  beep_on_ready: true      # sound: one high beep = on the clipboard, double = pasted, low = error
+  # A small badge next to the mouse pointer: red plus seconds while recording, then a progress ring
+  # with a percentage, then a green check ("Pasted" / "Ready - press Ctrl+V").
+  # It is click-through and never takes the focus. false = off (beeps and tray notes stay).
+  cursor_badge: true
+  # Starting a new recording while the last one is still being processed: the old one is dropped
+  # (release the key and press again = "start over"). false = deliver every dictation in order.
+  discard_pending_on_new_recording: true
+  # ... but only if the old recording was shorter than this many seconds. An accidental key press
+  # should not throw away a 15-minute talk; that one is delivered anyway (order is preserved).
+  discard_only_if_shorter_than_s: 30
+  # Every delivered text is also appended to data/history.log (local only). The tray menu item
+  # "Copy last text to clipboard" brings it back if the clipboard has been overwritten since.
+  # null = keep no history at all.
+  history_file: "data/history.log"
+  history_keep_days: 14

@@ -1,0 +1,16 @@
+# Persönliches: Diktat-Verlauf, Kalibrier-Aufnahmen, gemerkte Einstellungen
+data/
+calibration/
+state.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Editor / System
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
