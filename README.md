@@ -6,6 +6,10 @@ Built with **German dictation** as the first-class case (Whisper `large-v3-turbo
 
 *Deutsche Fassung weiter unten ↓*
 
+![Dictating into Notepad: a spoken sentence full of filler words appears as clean text](docs/demo.gif)
+
+*Real recording, nothing sped up: hold the key, speak, release — about five seconds later the cleaned-up text is in the editor. [Same demo as a 50-second video with sound](docs/demo.mp4), including English, German and technical terms.*
+
 ---
 
 ## What it does
@@ -94,6 +98,10 @@ Built at [Escape Universe](https://escapeuniverse.de), Nienburg / Hannover / Lei
 **Diktieren unter Windows, ohne dass etwas den Rechner verlässt.** Taste halten, sprechen, loslassen — der bereinigte Text landet am Cursor oder in der Zwischenablage. Spracherkennung und Textbereinigung laufen lokal auf deiner Grafikkarte.
 
 Gebaut für **deutsche Diktate**: Whisper `large-v3-turbo` statt eines englischen Kleinmodells, eigenes Wörterbuch für Namen und Fachbegriffe, Umlaute bleiben Umlaute. Für Englisch funktioniert es genauso.
+
+![Diktat in Notepad: ein gesprochener Satz mit Füllwörtern erscheint als sauberer Text](docs/demo-de.gif)
+
+*Echte Aufnahme, nichts beschleunigt: Taste halten, sprechen, loslassen — rund fünf Sekunden später steht der bereinigte Text im Editor. [Dieselbe Demo als 50-Sekunden-Video mit Ton](docs/demo.mp4).*
 
 ### Was es kann
 
