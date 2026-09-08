@@ -1,7 +1,7 @@
 """S2 — STT-Wrapper um faster-whisper (GPU). Default-Modell seit 05.09.2026: large-v3-turbo.
 
 Modell wird EINMAL geladen und resident gehalten (kein Reload pro Diktat).
-CUDA-DLL-Wiring fuer die pip-Installation von faster-whisper unter Windows.
+CUDA-DLL-Wiring nach Vorbild automations/slack-audio-transcribe/transcribe.py.
 """
 from __future__ import annotations
 
@@ -68,9 +68,9 @@ class Transcriber:
     # Whisper haengt den initial_prompt VOR das Audio; mehr als ~224 Tokens werden vorne abgeschnitten
     # (also die ERSTEN Begriffe fallen weg). Wir kuerzen deshalb selbst von hinten (Liste = Prioritaet).
     PROMPT_TOKEN_BUDGET = 216
-    # Nach der Begriffsliste ein neutraler Satz: Beginnt das Diktat mit genau den Begriffen, die am Ende
-    # des Prompts stehen, laesst Whisper sie sonst weg (gemessen in der Kalibrierung; mit diesem
-    # Schluss-Satz kommen sie vollstaendig durch).
+    # Nach der Begriffsliste ein neutraler Satz: Beginnt das Diktat mit genau den Namen, die am Ende des
+    # Prompts stehen, laesst Whisper sie sonst weg (gemessen 05.09.2026 in der Kalibrierung: "Paperless, Max,
+    # Zigbee, Matrix, Besprechungsraum" -> nur "Besprechungsraum, Konferenzraum."; mit diesem Schluss vollstaendig).
     PROMPT_SUFFIX = " Das Diktat beginnt jetzt."
 
     def load(self) -> None:
@@ -106,7 +106,7 @@ class Transcriber:
                 dropped += 1
             self.initial_prompt = head + ": " + ", ".join(terms) + "." + self.PROMPT_SUFFIX
             print(f"[stt] initial_prompt was {n} tokens -> dropped the last {dropped} terms "
-                  f"(budget {self.PROMPT_TOKEN_BUDGET}); shorten or reorder dictionary.txt.")
+                  f"(Budget {self.PROMPT_TOKEN_BUDGET}); shorten or reorder dictionary.txt.")
         except Exception as e:  # noqa: BLE001
             print(f"[stt] prompt trimming skipped: {e}")
 

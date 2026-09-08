@@ -17,3 +17,21 @@ Whisper
 Nienburg
 Leipzig
 Hannover
+
+# === NUR-CLEANUP (everything below this marker line) ===
+# Whisper's prompt only holds about 224 tokens, and a long list silently drops its tail — which is
+# how a batch of names once stopped reaching Whisper without any warning. Terms below the marker are
+# therefore NOT sent to Whisper; they only go to the clean-up model as "spell it exactly like this".
+# Put the long tail here: project names, product names, jargon, anything Whisper usually gets close
+# enough for the alias rules (aliases.txt, grown via --calibrate) to repair.
+# The app prints how many terms went into each tier at startup.
+Kubernetes
+PostgreSQL
+Grafana
+WireGuard
+Raspberry Pi
+Home Assistant
+Zigbee
+Jitsi
+Matrix
+Paperless

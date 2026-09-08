@@ -4,7 +4,7 @@ Zustaende:
   hidden      nichts sichtbar
   recording   roter Punkt + Sekunden   (waehrend der Aufnahme)
   processing  Fortschrittsring + Prozent + Text ("hoere zu", "raeume auf")
-  done        kurzer gruener Haken + Text ("Eingefuegt" / "Strg+V bereit"), blendet nach ~1,2 s aus
+  done        kurzer gruener Haken + Text ("Pasted" / "Ready - press Ctrl+V"), blendet nach ~1,2 s aus
   error       roter Text, blendet nach ~2 s aus
 
 Das Fenster ist rahmenlos, immer oben, klick-durchlaessig (WS_EX_TRANSPARENT) und nimmt nie den Fokus
@@ -48,7 +48,7 @@ class Overlay:
         with self._lock:
             self._state, self._t0, self._text = "recording", time.time(), ""
 
-    def processing(self, eta_s: float, text: str = "höre zu") -> None:
+    def processing(self, eta_s: float, text: str = "listening") -> None:
         with self._lock:
             self._state, self._t0, self._eta, self._text, self._pct = "processing", time.time(), max(0.3, eta_s), text, 0.0
 
@@ -63,7 +63,7 @@ class Overlay:
                 self._t0 = time.time() - done * 0.01 * max(0.3, eta_left_s) / max(0.01, 1 - done * 0.01)
                 self._eta = (time.time() - self._t0) + max(0.3, eta_left_s)
 
-    def done(self, text: str = "Strg+V bereit", seconds: float = 1.3) -> None:
+    def done(self, text: str = "Ready - press Ctrl+V", seconds: float = 1.3) -> None:
         with self._lock:
             self._state, self._text, self._pct, self._until = "done", text, 100.0, time.time() + seconds
 

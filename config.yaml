@@ -20,6 +20,12 @@ audio:
   # are buffered, cut at the last pause in speech. When you stop, only the remainder is left to do.
   chunk_seconds: 25
   chunk_silence_s: 0.45
+  # The microphone stream stays open for the lifetime of the app, so recording starts the instant
+  # you press the key. Opening a stream on demand can take seconds on Windows, which used to swallow
+  # the first word. preroll_s = how much audio from just BEFORE the key press is kept (a ring buffer;
+  # outside a recording nothing else is stored). The red badge only appears once audio really arrives.
+  persistent_stream: true
+  preroll_s: 0.6
 
 stt:
   # large-v3-turbo: same encoder as large-v3, 4 decoder layers instead of 32.
@@ -45,8 +51,29 @@ llm:
   model: "qwen2.5:3b-instruct"   # sized for an 8 GB VRAM budget next to Whisper. A 7B model needs more room.
   temperature: 0.2
   timeout_s: 20
-  keep_alive: "30m"       # keep the model warm in Ollama. On a dedicated GPU box, "-1" works.
+  keep_alive: -1          # Keep the model loaded until the app quits ("30m" and the like also work).
+                          # A resident model only occupies VRAM, it costs no compute while idle
+                          # (measured: 0 % utilisation, 10 W). On quit the models are unloaded.
+  # api: auto = talk to Ollama natively (/api/chat) whenever base_url points at port 11434,
+  # otherwise use the OpenAI-compatible route. This matters: over /v1/chat/completions Ollama
+  # ignores keep_alive, so the model expired after 5 minutes and the first dictation after every
+  # break was slow. The native route also reports done_reason, which is how a truncated answer
+  # is detected (see fidelity_min_ratio below).
+  api: "auto"
+  # Faithfulness guard (wf/fidelity.py), applied after the clean-up: a digit in the result must
+  # have been spoken (as a digit or as a number word), URLs and e-mail addresses must survive
+  # unchanged, and the result must not shrink below fidelity_min_ratio of the raw word count.
+  # If a rule trips, the raw transcript is delivered instead. Real case: "seventy-five" came back
+  # as "75k". Set to 0 to disable the length check.
+  fidelity_min_ratio: 0.5
   enabled: true           # false = skip the clean-up, deliver the raw transcript
+  # Translation mode (tray menu -> "Translate into"): a separate model, because the 3B clean-up
+  # model answered a request for Italian with a Chinese sentence and did Russian poorly.
+  # gemma3:4b handles all five target languages cleanly in 0.5-0.8 s. It is only loaded while the
+  # mode is on and leaves VRAM again after translate_keep_alive, so Whisper and the clean-up model
+  # keep their room in an 8 GB budget.
+  translate_model: "gemma3:4b"
+  translate_keep_alive: "5m"
 
 inject:
   # hybrid (default): the text ALWAYS goes to the clipboard. If a writable text field had focus when
@@ -100,6 +127,11 @@ ui:
   # with a percentage, then a green check ("Pasted" / "Ready - press Ctrl+V").
   # It is click-through and never takes the focus. false = off (beeps and tray notes stay).
   cursor_badge: true
+  # Appending: if the previous dictation only went to the clipboard (it was not pasted) and you
+  # dictate again within this many seconds, the new text is appended to it, so a single Ctrl+V
+  # brings both. Only happens while the clipboard still holds exactly that previous text, and never
+  # after an automatic paste (there the cursor already sits behind the text). 0 = off.
+  append_within_s: 60
   # Starting a new recording while the last one is still being processed: the old one is dropped
   # (release the key and press again = "start over"). false = deliver every dictation in order.
   discard_pending_on_new_recording: true

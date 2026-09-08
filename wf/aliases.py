@@ -3,11 +3,11 @@
 Whisper schreibt Eigennamen phonetisch ("Nextclout", "Next Cloud" statt "Nextcloud"). Statt das dem LLM zu
 ueberlassen (nicht reproduzierbar), steht jede bekannte Verwechslung als Zeile in aliases.txt:
 
-    Nextcloud = Nextclout, Next Cloud, Nextcloude
+    Nextcloud = Nextclout, Next Cloud, Nextcloude, Nexcloud
 
 Links die richtige Form, rechts die gehoerten Varianten (Komma-getrennt). Ersetzt wird nur an
 Wortgrenzen, unabhaengig von Gross-/Kleinschreibung; Bindestrich-Anhaengsel bleiben erhalten
-("nextclouts" wird NICHT ersetzt, "Nextclout's" schon). Reihenfolge: laengste Varianten zuerst.
+("nextclouts" wird NICHT ersetzt, "Nextclout's" schon zu "Nextcloud's"). Reihenfolge: laengste Varianten zuerst.
 Die Datei waechst durch die Kalibrierung (whisperflow.py --calibrate) oder von Hand.
 """
 from __future__ import annotations

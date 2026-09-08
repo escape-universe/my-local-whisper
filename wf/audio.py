@@ -88,7 +88,8 @@ class Recorder:
     Waehrend der Aufnahme kann drain_until_silence() fertige Abschnitte abholen."""
 
     def __init__(self, samplerate: int = 16000, channels: int = 1,
-                 device: Any = None, max_seconds: int = 3600):
+                 device: Any = None, max_seconds: int = 3600,
+                 persistent: bool = True, preroll_s: float = 0.6):
         self.samplerate = samplerate
         self.channels = channels
         self.device = _resolve_device(device)
@@ -101,23 +102,40 @@ class Recorder:
         self._stream: sd.InputStream | None = None
         self._frames = 0            # insgesamt aufgenommen (fuer das Limit)
         self.limit_hit = False
+        # Seit 08.09.2026: Der Mikrofon-Stream bleibt dauerhaft offen (persistent) und fuehrt einen
+        # kleinen Vorlauf-Ring (preroll_s). Grund (der Nutzer): Nach dem Druecken fehlte manchmal das erste
+        # Wort, weil das Oeffnen des Streams unter Windows bis zu mehrere Sekunden dauern kann.
+        # Mit offenem Stream beginnt die Aufnahme sofort, und der Vorlauf faengt auch das ab, was
+        # knapp VOR dem Druecken gesagt wurde. Ausserhalb einer Aufnahme wird nichts gespeichert
+        # (nur der Ring von preroll_s Sekunden, der staendig ueberschrieben wird).
+        self.persistent = bool(persistent)
+        self.preroll_frames = int(max(0.0, preroll_s) * samplerate)
+        self._preroll: list[np.ndarray] = []
+        self._preroll_frames = 0
+        self._recording = False     # nur bei persistent relevant; sonst == (_stream is not None)
+        self.captured_frames = 0    # Frames, die seit start() wirklich angekommen sind (Anzeige „Aufnahme läuft“)
 
     def _callback(self, indata, frames, time_info, status):  # noqa: ARG002
         # status kann Overflow melden; wir ignorieren es bewusst (Diktat, nicht Studio)
+        mono = indata[:, 0].copy() if indata.ndim > 1 else indata.copy()
+        if self.persistent and not self._recording:
+            if self.preroll_frames <= 0:
+                return
+            with self._buf_lock:
+                self._preroll.append(mono)
+                self._preroll_frames += frames
+                while self._preroll and self._preroll_frames - len(self._preroll[0]) >= self.preroll_frames:
+                    self._preroll_frames -= len(self._preroll.pop(0))
+            return
         if self._frames < self.max_frames:
             with self._buf_lock:
-                self._buf.append(indata[:, 0].copy() if indata.ndim > 1 else indata.copy())
+                self._buf.append(mono)
             self._frames += frames
+            self.captured_frames += frames
         else:
             self.limit_hit = True
 
-    def start(self) -> None:
-        if self._stream is not None:
-            return
-        self._frames = 0
-        self.limit_hit = False
-        with self._buf_lock:
-            self._buf.clear()
+    def _open_stream(self) -> None:
         self._stream = sd.InputStream(
             samplerate=self.samplerate,
             channels=self.channels,
@@ -126,6 +144,54 @@ class Recorder:
             callback=self._callback,
         )
         self._stream.start()
+
+    def open(self) -> bool:
+        """Persistenten Stream vorab oeffnen (beim App-Start). False = Mikro nicht verfuegbar,
+        dann faellt start() auf das alte Verhalten (Stream je Aufnahme oeffnen) zurueck."""
+        if not self.persistent or self._stream is not None:
+            return self._stream is not None
+        try:
+            self._open_stream()
+            return True
+        except Exception as e:  # noqa: BLE001
+            print(f"[audio] could not open the microphone stream up front ({e}) -> opening one per recording")
+            self.persistent = False
+            self._stream = None
+            return False
+
+    def close(self) -> None:
+        """Persistenten Stream schliessen (App-Ende)."""
+        with self._op_lock:
+            if self._stream is not None:
+                try:
+                    self._stream.stop(); self._stream.close()
+                finally:
+                    self._stream = None
+            self._recording = False
+
+    def start(self) -> None:
+        if self.is_recording:
+            return
+        self._frames = 0
+        self.captured_frames = 0
+        self.limit_hit = False
+        if self.persistent and self._stream is not None:
+            # Vorlauf uebernehmen, dann auf Aufnahme schalten — beides unter dem Lock, damit der
+            # Callback keinen Block dazwischen verliert.
+            with self._buf_lock:
+                self._buf = list(self._preroll)
+                self._frames = self._preroll_frames
+                self._preroll, self._preroll_frames = [], 0
+                self._recording = True
+            return
+        if self.persistent and self._stream is None and self.open():
+            with self._buf_lock:
+                self._buf.clear()
+                self._recording = True
+            return
+        with self._buf_lock:
+            self._buf.clear()
+        self._open_stream()
 
     def _take_all(self) -> np.ndarray:
         with self._buf_lock:
@@ -153,7 +219,7 @@ class Recorder:
         if self.buffered_seconds() < min_seconds:
             return None
         with self._op_lock:
-            if self._stream is None:
+            if not self.is_recording:
                 return None  # schon gestoppt: stop() hat den Rest geholt
             audio = self._take_all()
             window = audio[: int(max_chunk_s * self.samplerate)]
@@ -173,9 +239,13 @@ class Recorder:
 
     def stop(self) -> np.ndarray:
         """Schliesst den Stream, gibt das (noch nicht abgeholte) float32-mono-Array zurueck."""
-        if self._stream is None:
+        if not self.is_recording:
             return np.zeros(0, dtype=np.float32)
         with self._op_lock:
+            if self.persistent:
+                with self._buf_lock:
+                    self._recording = False   # Callback fuellt ab jetzt wieder nur den Vorlauf-Ring
+                return self._take_all()
             self._stream.stop()
             self._stream.close()
             self._stream = None
@@ -183,4 +253,6 @@ class Recorder:
 
     @property
     def is_recording(self) -> bool:
+        if self.persistent:
+            return self._recording and self._stream is not None
         return self._stream is not None

@@ -34,6 +34,7 @@ from wf import config as config_mod
 from wf import context as context_mod
 from wf import focus as focus_mod
 from wf import inject as inject_mod
+from wf import lang as lang_mod
 from wf import overlay as overlay_mod
 from wf import stt as stt_mod
 from wf.hotkey import HoldToTalk
@@ -84,12 +85,13 @@ class Pipeline:
 
     def __init__(self, cfg: dict):
         self.cfg = cfg
-        base_terms = config_mod.load_dictionary(cfg)
+        base_terms, llm_only = config_mod.load_dictionary_tiers(cfg)
         first_names, full_names = config_mod.load_employee_names(cfg)
         # Whisper-Seed: Begriffe + Vornamen (Reihenfolge = Prioritaet, stt.py kuerzt aufs Token-Budget)
         self.dictionary = base_terms + [n for n in first_names if n not in base_terms]
-        # LLM-Woerterbuch darf laenger sein: zusaetzlich volle Namen
-        self.llm_dictionary = self.dictionary + [n for n in full_names if n not in self.dictionary]
+        # LLM-Woerterbuch darf laenger sein: zusaetzlich volle Namen + die Nur-Cleanup-Begriffe
+        self.llm_dictionary = self.dictionary + [n for n in full_names if n not in self.dictionary] \
+            + [t for t in llm_only if t not in self.dictionary]
         self.aliases = aliases_mod.AliasFixer(aliases_mod.load_aliases(config_mod.load_aliases_path(cfg)))
         seed = config_mod.dictionary_prompt_seed(self.dictionary)
         self.transcriber = stt_mod.Transcriber(cfg, initial_prompt=seed)
@@ -98,14 +100,18 @@ class Pipeline:
         self._ui = cfg.get("ui", {}) or {}
         self.method = str(self._inj.get("method", "hybrid"))
         self.tray = None  # optional, gesetzt von der Tray-App
+        # Uebersetzungsmodus: "" = aus. Wird NICHT in state.json gemerkt (Entscheidung 08.09.2026) —
+        # nach jedem Start diktiert er wieder normal in seiner Sprache.
+        self.translate_to = ""
+        self.last_language = ""   # Whispers Erkennung des letzten Abschnitts
         self.overlay = overlay_mod.Overlay(enabled=bool(self._ui.get("cursor_badge", True)))
         # Whisper/CTranslate2 ist nicht fuer parallele transcribe()-Aufrufe gebaut:
         # mehrere Diktate/Abschnitte hintereinander werden hier in Reihenfolge abgearbeitet.
         self._lock = threading.Lock()
         hist = self._ui.get("history_file")
         self.history_path = (ROOT / hist) if hist else None
-        print(f"[pipeline] dictionary: {len(base_terms)} terms + {len(first_names)} names from the list, "
-              f"{len(self.aliases)} Alias-Regeln")
+        print(f"[pipeline] dictionary: {len(base_terms)} terms + {len(first_names)} names in the Whisper prompt, "
+              f"+{len(llm_only)} clean-up only, {len(self.aliases)} alias rules")
 
     def warmup(self) -> dict:
         """STT-Modell laden + Dummy-Inferenz; LLM-Ping laeuft parallel dazu (spart ~1-2 s Start)."""
@@ -126,16 +132,32 @@ class Pipeline:
     # ---- STT ----
 
     def transcribe(self, arr: np.ndarray) -> str:
-        """Ein Abschnitt -> Rohtext (serialisiert ueber das Modell-Lock)."""
+        """Ein Abschnitt -> Rohtext (serialisiert ueber das Modell-Lock).
+        Merkt sich Whispers erkannte Sprache in self.last_language — die bindet den Cleanup."""
         with self._lock:
-            return self.transcriber.transcribe(arr)["text"].strip()
+            res = self.transcriber.transcribe(arr)
+        self.last_language = str(res.get("language") or "")
+        return res["text"].strip()
 
     def clean_text(self, raw: str, category: str) -> tuple[str, list[str]]:
-        """Aliases -> LLM-Cleanup -> Aliases fuer einen Abschnitt."""
+        """Aliases -> LLM-Cleanup (in der gesprochenen Sprache) -> Aliases fuer einen Abschnitt."""
         raw_fixed, a1 = self.aliases.fix(raw)
-        cleaned, _ = self.cleaner.clean(raw_fixed, category)
+        cleaned, _ = self.cleaner.clean(raw_fixed, category, self.last_language)
         cleaned, a2 = self.aliases.fix(cleaned)
         return cleaned, a1 + a2
+
+    def maybe_translate(self, text: str) -> tuple[str, str]:
+        """Uebersetzungsmodus: (text, hinweis). Aus -> unveraendert, leerer Hinweis."""
+        target = (self.translate_to or "").strip()
+        if not text or not target:
+            return text, ""
+        t0 = time.time()
+        self.overlay.phase("translating")
+        out, ok = self.cleaner.translate(text, target)
+        if not ok:
+            return text, "Übersetzung nach " + lang_mod.name_de(target) + " fehlgeschlagen — Originaltext eingefügt."
+        print("[translate] -> " + target + " in " + str(round(time.time() - t0, 1)) + "s")
+        return out, ""
 
     # ---- Volle Runde ----
 
@@ -151,10 +173,11 @@ class Pipeline:
         if cancelled():
             result["note"] = "verworfen (neue Aufnahme vor STT)"
             return result
-        self.overlay.phase("höre zu")
+        self.overlay.phase("listening")
         tail = self.transcribe(arr) if arr is not None and len(arr) else ""
         result["raw"] = tail
-        result["language"] = self.transcriber.language or "auto"
+        # Whispers ERKANNTE Sprache (nicht die konfigurierte) — sie bindet Cleanup + Guard.
+        result["language"] = self.last_language or self.transcriber.language or "auto"
         result["stt_s"] = round(time.time() - t0, 2)
         if not tail and not prefix_cleaned:
             result["cleaned"] = ""
@@ -173,12 +196,21 @@ class Pipeline:
         was_cleaned = False
         cleaned_tail = ""
         if tail:
-            self.overlay.phase("räume auf", eta_left_s=0.4 + len(tail.split()) * 0.03)
+            self.overlay.phase("cleaning up", eta_left_s=0.4 + len(tail.split()) * 0.03)
             raw_fixed, a1 = self.aliases.fix(tail)
-            cleaned_tail, was_cleaned = self.cleaner.clean(raw_fixed, ctx["category"])
+            cleaned_tail, was_cleaned = self.cleaner.clean(raw_fixed, ctx["category"], self.last_language)
             cleaned_tail, a2 = self.aliases.fix(cleaned_tail)
             applied = a1 + a2
         cleaned = (prefix_cleaned + " " + cleaned_tail).strip() if prefix_cleaned else cleaned_tail
+        # Uebersetzungsmodus zuletzt und auf dem GESAMTtext (nicht pro Abschnitt) — sonst
+        # uebersetzt jedes Stueck fuer sich und der Zusammenhang geht verloren.
+        if cleaned and self.translate_to:
+            cleaned, hinweis = self.maybe_translate(cleaned)
+            result["translated_to"] = self.translate_to
+            if hinweis:
+                result["note_translate"] = hinweis
+                if self.tray:
+                    self.tray.notify(hinweis)
         result["aliases"] = applied
         result["cleaned"] = cleaned
         result["was_cleaned"] = was_cleaned or bool(prefix_cleaned)
@@ -227,15 +259,59 @@ class Pipeline:
 
     # ---- Ausgabe ----
 
+    # ---- Anhaengen (Entscheidung 08.09.2026) ----
+    # Kommt kurz nach einem Diktat, das NUR in der Zwischenablage landete (nicht eingefuegt), ein
+    # weiteres, wird es angehaengt: Zwischenablage = alter Text + neuer Text. Ein Strg+V bringt dann
+    # beides. Bedingungen (alle): letzte Lieferung war 'clipboard', hoechstens append_within_s her,
+    # und die Zwischenablage traegt noch genau unseren letzten Text (sonst hat er inzwischen etwas
+    # anderes kopiert — dann kein Anhaengen). Wurde der letzte Text automatisch EINGEFUEGT, wird nie
+    # angehaengt: der Cursor steht ohnehin hinter dem Text, ein weiteres Diktat setzt dort fort.
+    # Bekannte Grenze: hat er den alten Text selbst schon mit Strg+V eingefuegt UND diktiert innerhalb
+    # des Fensters weiter, steht der alte Text nach dem naechsten Strg+V doppelt da. Deshalb Fenster
+    # kurz halten (ui.append_within_s) oder 0 = aus.
+
+    @staticmethod
+    def append_decision(last: dict | None, now_ts: float, clipboard_now: str | None, window_s: float) -> bool:
+        if not last or window_s <= 0:
+            return False
+        if last.get("mode") != "clipboard":
+            return False
+        if now_ts - float(last.get("ts", 0)) > window_s:
+            return False
+        return clipboard_now is not None and clipboard_now == last.get("text")
+
+    def _maybe_append(self, text: str) -> tuple[str, bool]:
+        window = float(self._ui.get("append_within_s", 60) or 0)
+        last = getattr(self, "_last_delivery", None)
+        try:
+            clip_now, _ = inject_mod._clip_get()
+        except Exception:  # noqa: BLE001
+            clip_now = None
+        if self.append_decision(last, time.time(), clip_now, window):
+            return (last["text"].rstrip() + " " + text.lstrip()), True
+        return text, False
+
+    def _note_delivery(self, text: str, mode: str) -> None:
+        self._last_delivery = {"text": text, "mode": mode, "ts": time.time()}
+
     def _deliver(self, text: str, ctx: dict) -> str:
         """Rueckgabe: 'pasted' | 'clipboard' | 'failed'."""
+        text, appended = self._maybe_append(text)
+        if appended:
+            print("[deliver] appended to the previous dictation (the clipboard holds both)")
         if self.method == "hybrid":
-            return self._deliver_hybrid(text, ctx)
+            mode = self._deliver_hybrid(text, ctx, appended=appended)
+            if mode != "failed":
+                self._note_delivery(text, mode)
+            return mode
         if self.method == "clipboard_only":
-            return "clipboard" if self._to_clipboard_and_notify(text) else "failed"
+            ok = self._to_clipboard_and_notify(text, appended=appended)
+            if ok:
+                self._note_delivery(text, "clipboard")
+            return "clipboard" if ok else "failed"
         # Auto-Paste-Modi (clipboard / sendinput): UIPI: Admin-Fenster schluckt Injektion still (R1)
         if self._ui.get("notify_on_blocked_window", True) and context_mod.is_foreground_elevated():
-            msg = "Zielfenster laeuft als Admin, Text NICHT eingefuegt. Fenster ohne Admin nutzen."
+            msg = "Target window runs as administrator, text NOT pasted. Use a window without admin rights."
             print(f"[inject] {msg}")
             if self.tray:
                 self.tray.notify(msg)
@@ -244,7 +320,7 @@ class Pipeline:
         delay = int(self._inj.get("restore_clipboard_delay_ms", 120))
         return "pasted" if inject_mod.inject(text, method=method, restore_delay_ms=delay) else "failed"
 
-    def _deliver_hybrid(self, text: str, ctx: dict) -> str:
+    def _deliver_hybrid(self, text: str, ctx: dict, appended: bool = False) -> str:
         """Text kommt IMMER in die Zwischenablage. Zusaetzlich Strg+V, wenn (a) beim Loslassen ein
         beschreibbares Textfeld den Fokus hatte, (b) dasselbe Fenster jetzt noch vorne ist und
         (c) jetzt immer noch ein Textfeld den Fokus hat. Sonst nur Zwischenablage + Ton."""
@@ -253,7 +329,7 @@ class Pipeline:
             _beep("error")
             print(f"[deliver] NOT placed on clipboard: {text!r}")
             if self.tray:
-                self.tray.notify("Clipboard not writable. The text is in the history file (data/history.log).")
+                self.tray.notify("Clipboard not writable, the text is in the history file (data/history.log).")
             return "failed"
         why = ""
         if not ctx.get("editable"):
@@ -270,32 +346,34 @@ class Pipeline:
                     why = f"jetzt kein Textfeld ({f['why']})"
         if why:
             print(f"[deliver] clipboard only: {why}")
-            self.overlay.done("Strg+V bereit")
+            label = "Ready - Ctrl+V (appended)" if appended else "Ready - press Ctrl+V"
+            self.overlay.done(label)
             if self._ui.get("beep_on_ready", True):
                 _beep("ok")
             if self._ui.get("notify_on_ready", True) and self.tray:
-                self.tray.notify(_preview(text), title="Ready - press Ctrl+V")
+                self.tray.notify(_preview(text), title=label)
             return "clipboard"
         inject_mod.paste_ctrl_v()
-        self.overlay.done("Eingefügt")
+        self.overlay.done("Pasted")
         if self._ui.get("beep_on_ready", True):
             _beep("pasted")
         print("[deliver] pasted (text field had focus); the text also stays on the clipboard")
         return "pasted"
 
-    def _to_clipboard_and_notify(self, text: str) -> bool:
+    def _to_clipboard_and_notify(self, text: str, appended: bool = False) -> bool:
         ok = inject_mod.to_clipboard(text)
         if ok:
-            self.overlay.done("Strg+V bereit")
+            label = "Ready - Ctrl+V (appended)" if appended else "Ready - press Ctrl+V"
+            self.overlay.done(label)
             if self._ui.get("beep_on_ready", True):
                 _beep("ok")
             if self._ui.get("notify_on_ready", True) and self.tray:
-                self.tray.notify(_preview(text), title="Ready - press Ctrl+V")
+                self.tray.notify(_preview(text), title=label)
         else:
-            self.overlay.error("Zwischenablage gesperrt")
+            self.overlay.error("Clipboard locked")
             _beep("error")
             if self.tray:
-                self.tray.notify("Clipboard not writable. The text is in the history file (data/history.log).")
+                self.tray.notify("Clipboard not writable, the text is in the history file (data/history.log).")
             print(f"[deliver] NOT placed on clipboard: {text!r}")
         return ok
 
@@ -318,6 +396,8 @@ class App:
             channels=audio_cfg.get("channels", 1),
             device=audio_cfg.get("input_device"),
             max_seconds=audio_cfg.get("max_seconds", 3600),
+            persistent=bool(audio_cfg.get("persistent_stream", True)),
+            preroll_s=float(audio_cfg.get("preroll_s", 0.6)),
         )
         self.chunk_seconds = float(audio_cfg.get("chunk_seconds", 25))
         self.chunk_silence_s = float(audio_cfg.get("chunk_silence_s", 0.45))
@@ -363,13 +443,28 @@ class App:
         self._rec_start = time.time()
         self._rec_category = context_mod.foreground_info(self.cfg).get("category", "default")
         self._recorder.start()
-        self.pipeline.overlay.recording()
+        # Anzeige erst, wenn wirklich Audio ankommt („damit man weiß, jetzt ist die
+        # Aufnahme 100 % da“). Mit offenem Stream ist das sofort; muss der Stream erst geoeffnet werden,
+        # erscheint das Rot verzoegert — aber ehrlich. Hoechstens 3 s warten, dann trotzdem anzeigen.
+        threading.Thread(target=self._show_recording_when_live, args=(self._generation,), daemon=True).start()
         if self.toggle_mode:
             _beep("start")
         if self.tray:
             self.tray.set_state("recording")
         self._streamer = threading.Thread(target=self._stream_loop, args=(self._generation,), daemon=True)
         self._streamer.start()
+
+    def _show_recording_when_live(self, gen: int) -> None:
+        t0 = time.time()
+        while gen == self._generation and self._recorder.is_recording and self._recorder.captured_frames <= 0:
+            if time.time() - t0 > 3.0:
+                break
+            time.sleep(0.02)
+        if gen == self._generation and self._recorder.is_recording:
+            self.pipeline.overlay.recording()
+            lag = time.time() - t0
+            if lag > 0.5:
+                print(f"[audio] recording only started after {lag:.1f} s (the stream had to be opened)")
 
     def _stream_loop(self, gen: int) -> None:
         """Waehrend der Aufnahme: fertige Abschnitte (an Sprechpausen) schon transkribieren."""
@@ -443,7 +538,7 @@ class App:
                 print(f"[dictation] #{gen} {res['note']}")
                 self.pipeline.overlay.hide()
             elif res.get("note") == "leeres Transkript":
-                self.pipeline.overlay.error("nichts verstanden", 1.5)
+                self.pipeline.overlay.error("nothing understood", 1.5)
             else:
                 al = f" aliases={res['aliases']}" if res.get("aliases") else ""
                 print(f"[dictation] #{gen} ({self._pending.get(gen, 0):.0f} s recorded) stt {res.get('stt_s','?')}s + cleanup "
@@ -451,10 +546,10 @@ class App:
                       f"-> {_preview(res.get('cleaned',''), 120)!r}")
         except Exception as e:  # noqa: BLE001
             print(f"[dictation] error: {e}")
-            self.pipeline.overlay.error("Fehler, siehe Konsole")
+            self.pipeline.overlay.error("Error, see console")
             _beep("error")
             if self.tray:
-                self.tray.notify(f"Error: {e}")
+                self.tray.notify(f"Fehler: {e}")
         finally:
             self._pending.pop(gen, None)
             with self._busy_lock:
@@ -473,6 +568,17 @@ class App:
             self._stop_recording()
         print(f"[app] {'enabled' if enabled else 'disabled'}")
 
+    def _set_translate_to(self, code: str) -> None:
+        """Tray-Auswahl "Translate into". Bewusst NICHT in state.json — nach einem Neustart
+        diktiert der Nutzer wieder normal in seiner Sprache (Entscheidung 08.09.2026)."""
+        self.pipeline.translate_to = code or ""
+        if code:
+            print(f"[app] translation on - everything is translated into {lang_mod.name_en(code)}.")
+            if self.tray:
+                self.tray.notify(f"Übersetzungsmodus an: {lang_mod.name_de(code)}")
+        else:
+            print("[app] translation off - the text stays in the language you speak.")
+
     def _set_toggle_mode(self, on: bool) -> None:
         self.toggle_mode = on
         state = _load_state(); state["toggle_mode"] = on; _save_state(state)
@@ -483,9 +589,31 @@ class App:
         if t and inject_mod.to_clipboard(t):
             _beep("ok")
             if self.tray:
-                self.tray.notify(_preview(t), title="Last text copied to clipboard")
+                self.tray.notify(_preview(t), title="Letzter Text in der Zwischenablage")
         elif self.tray:
-            self.tray.notify("No text in the history.")
+            self.tray.notify("Kein Text im Verlauf.")
+
+    def open_history(self) -> str:
+        """Verlaufsdatei im Standard-Editor oeffnen (Tray -> "Open the log", 09.09.2026).
+        Rueckgabe: '' = geoeffnet, sonst der Grund (fuer Tray-Meldung und Test)."""
+        p = self.pipeline.history_path
+        if p is None:
+            return "No history configured (config.yaml: ui.history_file)."
+        if not p.exists():
+            return f"No history yet ({p.name} appears with your first dictation)."
+        try:
+            import os
+            os.startfile(str(p))  # noqa: S606 — Windows-Standardprogramm fuer .log/.txt
+            return ""
+        except OSError as e:
+            return f"Could not open the history file: {e}"
+
+    def _open_log(self) -> None:
+        grund = self.open_history()
+        if grund:
+            print(f"[history] {grund}")
+            if self.tray:
+                self.tray.notify(grund)
 
     def _quit(self) -> None:
         self._stop.set()
@@ -498,21 +626,25 @@ class App:
         if not w["llm_reachable"]:
             print("[app] WARN: clean-up LLM not reachable -> raw transcript is delivered until Ollama runs.")
 
+        if self._recorder.open():
+            print(f"[app] microphone stream open (pre-roll {self._recorder.preroll_frames / self._recorder.samplerate:.1f} s) -> recording starts the instant you press.")
+
         key = self.cfg.get("hotkey", {}).get("key", "ctrl_r")
         hk = HoldToTalk(key, self._on_press, self._on_release)
         hk.start()
         mode = self.pipeline.method
-        hint = {"hybrid": "focused text field -> pasted directly, otherwise clipboard (Ctrl+V).",
-                "clipboard_only": "text goes to the clipboard (Ctrl+V).",
-                }.get(mode, f"pastes the text at the cursor ({mode}).")
-        how = "press once = on, again = off (toggle mode)" if self.toggle_mode else "hold to talk"
+        hint = {"hybrid": "Textfeld mit Fokus -> direkt eingefuegt, sonst Zwischenablage (Strg+V).",
+                "clipboard_only": "Text in die Zwischenablage (Strg+V).",
+                }.get(mode, f"fuegt Text am Cursor ein ({mode}).")
+        how = "einmal druecken = an, nochmal = aus (Umschalt-Modus)" if self.toggle_mode else "gedrueckt halten"
         print(f"[app] ready. '{key}' {how}. Then -> {hint}")
 
         self.pipeline.tray = None
         if self.use_tray:
             from wf.tray import Tray
             self.tray = Tray(self._toggle, self._quit, on_toggle_mode=self._set_toggle_mode,
-                             on_copy_last=self._copy_last, toggle_mode=self.toggle_mode)
+                             on_copy_last=self._copy_last, toggle_mode=self.toggle_mode,
+                             on_translate_to=self._set_translate_to, on_open_log=self._open_log)
             self.pipeline.tray = self.tray
             self.tray.set_state("idle")
             # pystray.run() blockiert im Main-Thread; Hotkey-Listener laeuft eh separat
@@ -525,7 +657,9 @@ class App:
             except KeyboardInterrupt:
                 pass
             hk.stop()
-        print("[app] stopped.")
+        self._recorder.close()
+        self.pipeline.cleaner.unload()
+        print("[app] stopped (models unloaded from VRAM).")
 
 
 # ---------------- CLI ----------------
@@ -564,8 +698,12 @@ def cmd_clean_text(cfg: dict, text: str) -> int:
     ok = pipe.cleaner.warmup()
     if not ok:
         print("LLM not reachable (is Ollama running?) -> testing anyway, expect the raw-text fallback.")
-    cleaned, was = pipe.cleaner.clean(text, "default")
+    # Ohne Mikro gibt es keine Whisper-Erkennung — hier uebernimmt der deterministische
+    # DE/EN-Pruefer die Rolle, damit dieser Aufruf dasselbe Verhalten testet wie ein Diktat.
+    erkannt = lang_mod.sniff_de_en(text)
+    cleaned, was = pipe.cleaner.clean(text, "default", erkannt)
     cleaned, applied = pipe.aliases.fix(cleaned)
+    print(f"Language: {erkannt or '(unklar)'}")
     print(f"RAW:      {text!r}")
     print(f"CLEANED:  {cleaned!r}")
     print(f"cleaned:  {was}  aliases: {applied}")
@@ -573,7 +711,7 @@ def cmd_clean_text(cfg: dict, text: str) -> int:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="whisperflow-local")
+    ap = argparse.ArgumentParser(description="my-local-whisper")
     ap.add_argument("--list-devices", action="store_true")
     ap.add_argument("--transcribe-file", metavar="WAV")
     ap.add_argument("--clean-text", metavar="TEXT")

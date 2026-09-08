@@ -98,7 +98,7 @@ def _send(inputs: list[_INPUT]) -> int:
     sent = ctypes.windll.user32.SendInput(n, arr, ctypes.sizeof(_INPUT))
     if sent != n:
         err = ctypes.windll.kernel32.GetLastError()
-        print(f"[inject] WARN: SendInput sendete {sent}/{n} Events (GetLastError={err})")
+        print(f"[inject] WARN: SendInput sent {sent}/{n} events (GetLastError={err})")
     return sent
 
 

@@ -76,6 +76,34 @@ def load_aliases_path(cfg: dict[str, Any]) -> Path:
     return ROOT / cfg.get("aliases_path", "aliases.txt")
 
 
+TIER_MARKER = "# === NUR-CLEANUP"
+
+
+def load_dictionary_tiers(cfg: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """(whisper_terms, cleanup_only_terms). Whisper hat nur ~224 Tokens Prompt — alles nach der
+    Markerzeile `# === NUR-CLEANUP ...` in dictionary.txt kommt nur ins LLM-Woerterbuch
+    („exakt so schreiben"), nicht in den Whisper-Prompt. Seit 09.09.2026 (Wortschatz-Erweiterung)."""
+    rel = cfg.get("dictionary_path", "dictionary.txt")
+    p = ROOT / rel
+    if not p.exists():
+        return [], []
+    whisper: list[str] = []
+    llm_only: list[str] = []
+    target = whisper
+    for line in p.read_text(encoding="utf-8").splitlines():
+        s = line.strip()
+        if s.startswith(TIER_MARKER):
+            target = llm_only
+            continue
+        if not s or s.startswith("#"):
+            continue
+        target.append(s)
+    seen: set[str] = set()
+    w = [t for t in whisper if not (t.lower() in seen or seen.add(t.lower()))]
+    l = [t for t in llm_only if not (t.lower() in seen or seen.add(t.lower()))]
+    return w, l
+
+
 def dictionary_prompt_seed(terms: list[str]) -> str:
     """faster-whisper initial_prompt: nennt die Begriffe, damit Whisper sie korrekt schreibt."""
     if not terms:

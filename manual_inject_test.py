@@ -21,7 +21,7 @@ from wf import inject as ij
 
 u32 = ctypes.windll.user32
 WM_GETTEXT, WM_SETTEXT, WM_CLOSE = 0x000D, 0x000C, 0x0010
-SAMPLE = "Grüße äöüß, Nextcloud und Thunderbird laufen."
+SAMPLE = "Grüße äöüß, der Besprechungsraum in Nienburg ist ausgebucht."
 
 
 def _fg(hwnd: int) -> None:

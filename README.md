@@ -2,7 +2,7 @@
 
 **Dictation on Windows that never leaves your machine.** Hold a key, speak, release — the cleaned-up text appears at your cursor or on your clipboard. Speech recognition and text clean-up both run locally on your own GPU.
 
-Built with **German dictation** as the first-class case (Whisper `large-v3-turbo` instead of a small English-only model, your own vocabulary file, umlauts stay umlauts) — it works just as well for English.
+It dictates, it cleans up, and it translates: **English and German are equally at home**, and Spanish, Italian and Russian come out of the translation mode. Nothing here is an English-only afterthought — it runs Whisper `large-v3-turbo` rather than a small English model, keeps your own vocabulary file, and umlauts stay umlauts, so German comes out as well as English does.
 
 *Deutsche Fassung weiter unten ↓*
 
@@ -15,11 +15,16 @@ Built with **German dictation** as the first-class case (Whisper `large-v3-turbo
 ## What it does
 
 - **Hold to talk** (default: right Ctrl), or **toggle mode** for long stretches — press once to start, press again to stop.
+- **Recording starts the instant you press.** The microphone stream stays open, and a 0.6 second pre-roll keeps what you said just before the key went down — no more swallowed first word. The badge only turns red once audio really arrives, so what you see is what is being recorded.
 - **Up to 60 minutes in one go.** Transcription runs while you are still speaking, cut at pauses. After you stop you wait about 5 seconds, whether you spoke for 10 seconds or 20 minutes.
 - **Clean-up, not answers.** A small local language model removes filler words, adds punctuation and applies spoken self-corrections ("make that seventy-five" after "fifty"). It never answers your text — a dictated question stays a question.
-- **Your own vocabulary.** Terms in `dictionary.txt`, misheard spellings in `aliases.txt`. With `--calibrate` you read your terms out loud once and confirm what Whisper makes of them.
+- **It stays faithful to what you said.** Clean-up models like to be helpful, and helpful is wrong here: ours once turned "seventy-five" into "75k". A guard checks the result afterwards — every digit must have been spoken, addresses and URLs must survive unchanged, nothing may be dropped wholesale. If a rule trips, you get the raw transcript instead of a polished lie.
+- **Appending.** Dictate again within a minute of a dictation that only went to the clipboard, and the new text is appended to it. One Ctrl+V brings both. Never after an automatic paste.
+- **Translation mode.** Tray menu → "Translate into" (English, German, Spanish, Italian, Russian). Dictate in your language, get the other one out. Off after every start, so normal dictation is never a surprise.
+- **Your own vocabulary, in two tiers.** Terms in `dictionary.txt`, misheard spellings in `aliases.txt`. With `--calibrate` you read your terms out loud once and confirm what Whisper makes of them. Whisper's prompt only holds about 224 tokens and silently drops the tail of a longer list, so everything below the `# === NUR-CLEANUP` marker line goes to the clean-up model only. The app prints the size of each tier at startup.
 - **Pasting that stays out of the way.** If a text field has focus, the text is pasted directly; otherwise it waits on the clipboard until you press Ctrl+V wherever you want it.
 - **A badge at the mouse pointer** showing recording time, progress and the result. Click-through, never steals focus.
+- **Your last dictations are one click away.** Every delivered text is also written to a local log; the tray menu opens it, so a text you lost from the clipboard is never gone. The log is kept for 14 days by default and never leaves the machine.
 
 ## What it does not do
 
@@ -58,7 +63,8 @@ On the first run Whisper downloads its model (once, about 1.5 GB). After that a 
 | Single beep | Text is on the clipboard, Ctrl+V pastes it |
 | Low beep | Something failed, details are in the tray note |
 | Release and immediately press again | Start over (short recordings are dropped, long ones are still delivered) |
-| Right-click the tray icon | Toggle mode, copy last text, quit |
+| Dictate again within a minute | Appended to the previous text if that one is still on the clipboard |
+| Right-click the tray icon | Toggle mode, translation target, copy last text, open the log, quit |
 
 ## Configuration
 
@@ -75,7 +81,10 @@ py whisperflow.py --selftest      # deterministic tests, no microphone needed
 py whisperflow.py --list-devices  # list microphones
 py manual_inject_test.py          # test pasting live (opens Notepad)
 py whisperflow.py --calibrate     # tune the vocabulary with your own voice
+py whisperflow.py --clean-text "um so the budget more like seventy five"   # clean-up stage only
 ```
+
+Or double-click `testen-konsole.bat`: that runs the app with a visible console, so every dictation shows you the raw transcript, the cleaned text, the timings and whether a faithfulness rule tripped. `kalibrieren.bat` does the same for calibration.
 
 ## Privacy
 
@@ -97,7 +106,7 @@ Built at [Escape Universe](https://escapeuniverse.de), Nienburg / Hannover / Lei
 
 **Diktieren unter Windows, ohne dass etwas den Rechner verlässt.** Taste halten, sprechen, loslassen — der bereinigte Text landet am Cursor oder in der Zwischenablage. Spracherkennung und Textbereinigung laufen lokal auf deiner Grafikkarte.
 
-Gebaut für **deutsche Diktate**: Whisper `large-v3-turbo` statt eines englischen Kleinmodells, eigenes Wörterbuch für Namen und Fachbegriffe, Umlaute bleiben Umlaute. Für Englisch funktioniert es genauso.
+Es diktiert, räumt auf und übersetzt: **Deutsch und Englisch sind gleichermaßen zu Hause**, dazu Spanisch, Italienisch und Russisch im Übersetzungsmodus. Deutsch ist dabei kein Anhängsel: Whisper `large-v3-turbo` statt eines englischen Kleinmodells, eigenes Wörterbuch für Namen und Fachbegriffe, Umlaute bleiben Umlaute.
 
 ![Diktat in Notepad: ein gesprochener Satz mit Füllwörtern erscheint als sauberer Text](docs/demo-de.gif)
 
@@ -107,9 +116,14 @@ Gebaut für **deutsche Diktate**: Whisper `large-v3-turbo` statt eines englische
 
 - **Halten und sprechen** (Standard: rechte Strg-Taste) oder **Umschalt-Modus** für lange Reden: einmal drücken an, nochmal drücken aus.
 - **Bis 60 Minuten am Stück.** Die Transkription läuft schon während du sprichst, geschnitten an Sprechpausen. Nach dem Stoppen wartest du rund 5 Sekunden, egal ob du 10 Sekunden oder 20 Minuten geredet hast.
+- **Aufnahme startet sofort beim Drücken.** Das Mikrofon bleibt bereit, 0,6 Sekunden Vorlauf fangen ab, was knapp vor dem Tastendruck gesagt wurde. Kein verschlucktes erstes Wort mehr. Das rote Feld erscheint erst, wenn wirklich Ton ankommt.
 - **Aufräumen statt Antworten.** Ein kleines lokales Sprachmodell entfernt Füllwörter, setzt Satzzeichen und wendet gesprochene Selbstkorrekturen an. Es beantwortet deinen Text nicht: eine diktierte Frage bleibt eine Frage.
-- **Eigenes Vokabular.** Begriffe in `dictionary.txt`, Hörfehler in `aliases.txt`, Feinschliff mit `--calibrate`.
+- **Treue zum Gesagten.** Aufräum-Modelle wollen gefallen, und genau das ist hier falsch: unseres machte aus „fünfundsiebzig" einmal „75k". Ein Wächter prüft das Ergebnis danach. Jede Ziffer muss gesagt worden sein, Adressen bleiben unverändert, nichts darf einfach wegfallen. Greift eine Regel, bekommst du den Rohtext statt einer geglätteten Behauptung.
+- **Anhängen.** Diktierst du innerhalb einer Minute erneut, während der letzte Text noch in der Zwischenablage liegt, wird angehängt. Ein Strg+V bringt beides. Nie nach automatischem Einfügen.
+- **Übersetzen.** Tray-Menü → „Übersetzen nach" (Englisch, Deutsch, Spanisch, Italienisch, Russisch). Nach jedem Start wieder aus.
+- **Eigenes Vokabular in zwei Stufen.** Begriffe in `dictionary.txt`, Hörfehler in `aliases.txt`, Feinschliff mit `--calibrate`. Whispers Prompt fasst nur rund 224 Tokens und lässt den Rest einer längeren Liste stillschweigend weg, deshalb geht alles unterhalb der Markerzeile `# === NUR-CLEANUP` nur noch ans Aufräum-Modell.
 - **Einfügen, das nicht stört.** Textfeld im Fokus: wird direkt eingefügt. Sonst liegt der Text in der Zwischenablage und du drückst Strg+V, wo du willst.
+- **Die letzten Diktate ein Klick entfernt.** Jeder gelieferte Text landet zusätzlich in einer lokalen Log-Datei, das Tray-Menü öffnet sie. Was aus der Zwischenablage verschwunden ist, ist damit nicht weg. Standard: 14 Tage, verlässt den Rechner nie.
 
 ### Was es nicht kann
 
@@ -132,6 +146,8 @@ Voraussetzungen: Windows 10/11, Python 3.11+, [Ollama](https://ollama.com), empf
 ### Einstellungen
 
 Alles kommentiert in [`config.yaml`](config.yaml) (auf Englisch). Wichtig: als Adresse für das Sprachmodell **`127.0.0.1` statt `localhost`** eintragen, sonst kostet ein IPv6-Timeout rund 2 Sekunden pro Diktat.
+
+Zum Ausprobieren: **`testen-konsole.bat`** startet das Programm mit sichtbarer Konsole und zeigt zu jedem Diktat Rohtext, bereinigten Text, Zeiten und ob ein Treue-Wächter angesprungen ist. **`kalibrieren.bat`** macht dasselbe für die Kalibrierung mit der eigenen Stimme.
 
 ### Datenschutz
 

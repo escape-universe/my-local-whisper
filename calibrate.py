@@ -2,7 +2,7 @@
 
 Ablauf (Konsole):
   py whisperflow.py --calibrate
-  1. Das Programm zeigt eine Runde mit ~6 Begriffen aus dictionary.txt (Namen, Orte, Systeme).
+  1. Das Programm zeigt eine Runde mit ~6 Begriffen (Mitarbeiter-Vornamen, Raeume, Systeme).
   2. Rechte Strg halten, die Begriffe der Reihe nach vorlesen (gern in einem Satz), loslassen.
   3. Es zeigt das ROHE Whisper-Ergebnis (ohne LLM) und markiert je Begriff: TREFFER / FEHLT.
      Fuer jeden fehlenden Begriff schlaegt es das aehnlichste gehoerte Wort als Alias vor.
@@ -106,7 +106,7 @@ def run_calibration(cfg: dict) -> int:
     log = ROOT / "calibration" / f"kalibrierung-{date.today().isoformat()}.md"
     log.parent.mkdir(exist_ok=True)
     with log.open("a", encoding="utf-8") as fh:
-        fh.write(f"\n## Run {time.strftime('%H:%M')} - model {tr.model_size}\n\n")
+        fh.write(f"\n## Lauf {time.strftime('%H:%M')} — Modell {tr.model_size}\n\n")
     per_round = 6
     rounds = [terms[i:i + per_round] for i in range(0, len(terms), per_round)]
     print(f"\n=== Calibration: {len(terms)} terms in {len(rounds)} rounds. Hold '{key}' and read the "
@@ -163,6 +163,6 @@ def run_calibration(cfg: dict) -> int:
     summary = f"hits {hits}, missed {misses}, new aliases {added}. Log: {log}"
     print("\n=== " + summary + " ===")
     with log.open("a", encoding="utf-8") as fh:
-        fh.write(f"\n**Result:** {summary}\n")
+        fh.write(f"\n**Ergebnis:** {summary}\n")
     print("New aliases take effect the next time the tray app starts (shortcut / start-whisperflow.bat).")
     return 0
