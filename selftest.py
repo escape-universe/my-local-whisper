@@ -337,16 +337,54 @@ def test_tray_open_log() -> None:
     app = wfm.App.__new__(wfm.App)          # ohne Mikro/Modell: nur die Verlaufs-Logik pruefen
     app.tray = None
     app.pipeline = type("P", (), {"history_path": None})()
+    from wf import i18n
     check("verlauf: ohne konfigurierten Verlauf klare Meldung", "config.yaml" in app.open_history())
     with tempfile.TemporaryDirectory() as td:
-        app.pipeline.history_path = Path(td) / "gibtsnicht.log"
-        check("verlauf: fehlende Datei wird gemeldet, kein Absturz", "No history yet" in app.open_history())
+        f = Path(td) / "gibtsnicht.log"
+        app.pipeline.history_path = f
+        check("verlauf: fehlende Datei wird gemeldet, kein Absturz (Text aus i18n)",
+              app.open_history() == i18n.t("note_no_history_yet", file=f.name))
     check("config: ui.history_file gesetzt", bool((cfg.get("ui") or {}).get("history_file")))
     from wf import tray as tr
     import inspect
     check("tray: Tray nimmt on_open_log entgegen", "on_open_log" in inspect.signature(tr.Tray.__init__).parameters)
     src = inspect.getsource(tr.Tray.__init__)
     check("tray: Menuepunkt fuer den Verlauf vorhanden", "self._open_log" in src)
+
+
+def test_i18n() -> None:
+    """09.09.2026: Oberflaechensprache — Tabelle vollstaendig, Platzhalter heil, Erkennung + Wahl."""
+    import re as _re
+    from wf import i18n
+    ref = set(i18n.TABLE["en"])
+    check("i18n: alle Sprachen aus LANGUAGES haben eine Tabelle",
+          all(c in i18n.TABLE for c, _ in i18n.LANGUAGES), str(list(i18n.TABLE)))
+    for code in i18n.TABLE:
+        fehlend = ref - set(i18n.TABLE[code])
+        check(f"i18n: {code} hat alle Zeilen", not fehlend, ", ".join(sorted(fehlend)) or "vollstaendig")
+        leer = [k for k, v in i18n.TABLE[code].items() if not v.strip()]
+        check(f"i18n: {code} ohne leere Zeilen", not leer, ", ".join(leer))
+    # Platzhalter muessen in jeder Sprache dieselben sein, sonst bricht format() im Betrieb
+    holes = lambda t: set(_re.findall(r"{(\w+)}", t))  # noqa: E731
+    schief = [(c, k) for c in i18n.TABLE for k in ref
+              if holes(i18n.TABLE[c][k]) != holes(i18n.TABLE["en"][k])]
+    check("i18n: gleiche Platzhalter in allen Sprachen", not schief, str(schief[:3]))
+    vorher = i18n.current()
+    try:
+        i18n.set_language("ru")
+        check("i18n: Umschalten wirkt sofort", i18n.t("menu_quit") == i18n.TABLE["ru"]["menu_quit"])
+        i18n.set_language("gibtsnicht")
+        check("i18n: unbekannte Sprache faellt auf Englisch", i18n.current() == "en" and i18n.t("menu_quit") == "Quit")
+        i18n.set_language("de")
+        check("i18n: Platzhalter wird gefuellt", "{file}" not in i18n.t("note_no_history_yet", file="x.log"))
+        check("i18n: unbekannter Schluessel liefert den Schluessel", i18n.t("gibtsnicht") == "gibtsnicht")
+    finally:
+        i18n.set_language(vorher)
+    check("i18n: Systemsprache wird erkannt", i18n.detect_system_language() in i18n.TABLE)
+    check("i18n: auto loest auf die Systemsprache auf", i18n.resolve("auto") == i18n.detect_system_language())
+    check("i18n: fester Code sticht auto", i18n.resolve("it") == "it")
+    from wf import lang as lg
+    check("i18n: Zielsprachen tragen ihren eigenen Namen", dict(lg.TARGETS)["ru"] == i18n.LANGUAGES[2][1])
 
 
 def test_fidelity_and_tiers() -> None:
@@ -507,6 +545,7 @@ def run_selftests() -> int:
     test_append_and_native_llm()  # fokus-frei
     test_fidelity_and_tiers()     # fokus-frei
     test_tray_open_log()          # fokus-frei
+    test_i18n()                   # fokus-frei
     test_aliases_focus_employees()
     test_long_dictation_parts()
     test_injection()  # GUI zuletzt (oeffnet kurz ein Fenster)

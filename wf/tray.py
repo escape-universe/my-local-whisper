@@ -6,6 +6,7 @@ from typing import Callable
 
 from PIL import Image, ImageDraw
 
+from . import i18n
 from . import lang as lang_mod
 
 _COLORS = {
@@ -35,7 +36,9 @@ class Tray:
                  on_copy_last: Callable[[], None] | None = None,
                  toggle_mode: bool = False,
                  on_translate_to: Callable[[str], None] | None = None,
-                 on_open_log: Callable[[], None] | None = None):
+                 on_open_log: Callable[[], None] | None = None,
+                 on_set_ui_language: Callable[[str], None] | None = None,
+                 ui_language: str = "auto"):
         import pystray
         self._pystray = pystray
         self._enabled = True
@@ -46,29 +49,41 @@ class Tray:
         self._on_copy_last = on_copy_last
         self._on_translate_to = on_translate_to
         self._on_open_log = on_open_log
+        self._on_set_ui_language = on_set_ui_language
+        self._ui_language = ui_language      # "auto" oder ein Code aus i18n.LANGUAGES
         self._translate_to = ""      # "" = aus; beim Start immer aus (Entscheidung 08.09.2026)
         self._state = "idle"
         # Untermenue "Translate into": Aus + die fuenf Zielsprachen aus wf/lang.py.
         # Radio-Auswahl: genau eine Zeile ist aktiv, "Aus" ist der Startzustand.
         # Bewusst NUR ueber das Tray, keine Tastenkombination — Strg+I/E/R sind in fast
         # jedem Programm belegt (Entscheidung 08.09.2026).
-        sprach_items = [pystray.MenuItem("Off (keep my language)", self._make_lang_click(""),
+        sprach_items = [pystray.MenuItem(lambda i: i18n.t("menu_translate_off"), self._make_lang_click(""),
                                          checked=lambda i, c="": self._translate_to == "",
                                          radio=True)]
         for code, label in lang_mod.TARGETS:
             sprach_items.append(pystray.MenuItem(
                 label, self._make_lang_click(code),
                 checked=lambda i, c=code: self._translate_to == c, radio=True))
+        # Oberflaechensprache (09.09.2026): „Automatisch" nimmt die Windows-Anzeigesprache, sonst
+        # die gewaehlte. Beschriftungen sind Callables, damit das Menue nach dem Umstellen sofort
+        # in der neuen Sprache steht, ohne die App neu zu starten.
+        ui_items = [pystray.MenuItem(lambda i: i18n.t("menu_language_auto"), self._make_ui_lang_click("auto"),
+                                     checked=lambda i: self._ui_language == "auto", radio=True)]
+        for code, label in i18n.LANGUAGES:
+            ui_items.append(pystray.MenuItem(
+                label, self._make_ui_lang_click(code),
+                checked=lambda i, c=code: self._ui_language == c, radio=True))
         items = [
-            pystray.MenuItem("Aktiv", self._toggle, checked=lambda i: self._enabled),
-            pystray.MenuItem("Umschalt-Modus (Taste: einmal = an, nochmal = aus)",
+            pystray.MenuItem(lambda i: i18n.t("menu_active"), self._toggle, checked=lambda i: self._enabled),
+            pystray.MenuItem(lambda i: i18n.t("menu_toggle_mode"),
                              self._toggle_mode_click, checked=lambda i: self._toggle_mode),
-            pystray.MenuItem("Translate into", pystray.Menu(*sprach_items)),
-            pystray.MenuItem("Copy last text to clipboard", self._copy_last),
+            pystray.MenuItem(lambda i: i18n.t("menu_translate"), pystray.Menu(*sprach_items)),
+            pystray.MenuItem(lambda i: i18n.t("menu_language"), pystray.Menu(*ui_items)),
+            pystray.MenuItem(lambda i: i18n.t("menu_copy_last"), self._copy_last),
             # Verlauf oeffnen (09.09.2026): die letzten Diktate nachlesen, ohne den Ordner zu suchen.
-            pystray.MenuItem("Open the log", self._open_log),
+            pystray.MenuItem(lambda i: i18n.t("menu_open_log"), self._open_log),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Quit", self._quit),
+            pystray.MenuItem(lambda i: i18n.t("menu_quit"), self._quit),
         ]
         self._icon = pystray.Icon(
             "my-local-whisper",
@@ -92,6 +107,17 @@ class Tray:
         if self._on_open_log:
             self._on_open_log()
 
+    def _make_ui_lang_click(self, setting: str):
+        def _click(icon, item):  # noqa: ARG002
+            self._ui_language = setting
+            if self._on_set_ui_language:
+                self._on_set_ui_language(setting)
+            try:                      # Beschriftungen sofort in der neuen Sprache zeigen
+                self._icon.update_menu()
+            except Exception:  # noqa: BLE001
+                pass
+        return _click
+
     def _make_lang_click(self, code: str):
         def _click(icon, item):  # noqa: ARG002
             self._translate_to = code
@@ -112,8 +138,8 @@ class Tray:
         self._state = state
         try:
             self._icon.icon = _icon_image(state, self._toggle_mode)
-            mode = " · Umschalt-Modus" if self._toggle_mode else ""
-            tr = (" · → " + lang_mod.name_de(self._translate_to)) if self._translate_to else ""
+            mode = (" · " + i18n.t("tooltip_toggle_mode")) if self._toggle_mode else ""
+            tr = (" · → " + lang_mod.name_native(self._translate_to)) if self._translate_to else ""
             self._icon.title = (f"whisperflow-local — {state}{mode}{tr}"
                                 + (f" · {detail}" if detail else ""))
         except Exception:  # noqa: BLE001

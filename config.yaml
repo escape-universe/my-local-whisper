@@ -119,6 +119,13 @@ aliases_path: "aliases.txt"         # misheard spelling -> correct spelling; gro
 employees_from: null
 
 ui:
+  # Language of the interface (tray menu, notifications, the badge at the pointer):
+  # auto | de | en | ru | es | it. auto = whatever Windows is set to, so the tool speaks
+  # your language the moment you install it. Switchable at runtime in the tray under
+  # "Language"; that choice lands in state.json and overrides this value.
+  # Console output stays English (it is for whoever debugs, not for the user).
+  # A new language is one block in wf/i18n.py — the self-test checks it is complete.
+  language: "auto"
   show_raw_first: false    # two-pass UX (not implemented yet): show the raw text first, then replace it with the cleaned one
   notify_on_blocked_window: true   # tray note when an elevated window swallows the paste (Windows UIPI); only for method clipboard/sendinput
   notify_on_ready: true    # tray note "Ready - press Ctrl+V" with a preview when the text was not pasted automatically

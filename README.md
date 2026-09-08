@@ -24,12 +24,13 @@ It dictates, it cleans up, and it translates: **English and German are equally a
 - **Your own vocabulary, in two tiers.** Terms in `dictionary.txt`, misheard spellings in `aliases.txt`. With `--calibrate` you read your terms out loud once and confirm what Whisper makes of them. Whisper's prompt only holds about 224 tokens and silently drops the tail of a longer list, so everything below the `# === NUR-CLEANUP` marker line goes to the clean-up model only. The app prints the size of each tier at startup.
 - **Pasting that stays out of the way.** If a text field has focus, the text is pasted directly; otherwise it waits on the clipboard until you press Ctrl+V wherever you want it.
 - **A badge at the mouse pointer** showing recording time, progress and the result. Click-through, never steals focus.
+- **It speaks your language.** The interface — tray menu, notifications, the badge — ships in English, German, Russian, Spanish and Italian. On the first start it follows your Windows display language, so it is already in your language when you install it, and you can switch it any time under *Language* in the tray. Adding another one is a single block in [`wf/i18n.py`](wf/i18n.py); the self-test then checks that no line is missing.
 - **Your last dictations are one click away.** Every delivered text is also written to a local log; the tray menu opens it, so a text you lost from the clipboard is never gone. The log is kept for 14 days by default and never leaves the machine.
 
 ## What it does not do
 
 - **Windows only.** Pasting and window detection use Windows APIs (UI Automation, SendInput).
-- **It is not faster than the cloud services.** The gain is privacy, German quality and zero running cost — not speed. On an RTX 2080 Super, a 13-second dictation takes about 2.3 seconds.
+- **It is not faster than the cloud services.** The gain is privacy, accuracy in the language you actually speak, and zero running cost — not speed. On an RTX 2080 Super, a 13-second dictation takes about 2.3 seconds.
 - **Without an NVIDIA GPU** it falls back to the CPU and gets noticeably slower. A smaller model (`stt.model: "small"`) helps and costs accuracy.
 - **No support promise.** This was built for one person's own use and is shared because it may be useful to others. Issues and pull requests are welcome; answers may take a while.
 
@@ -64,7 +65,7 @@ On the first run Whisper downloads its model (once, about 1.5 GB). After that a 
 | Low beep | Something failed, details are in the tray note |
 | Release and immediately press again | Start over (short recordings are dropped, long ones are still delivered) |
 | Dictate again within a minute | Appended to the previous text if that one is still on the clipboard |
-| Right-click the tray icon | Toggle mode, translation target, copy last text, open the log, quit |
+| Right-click the tray icon | Toggle mode, translation target, interface language, copy last text, open the log, quit |
 
 ## Configuration
 
@@ -92,7 +93,7 @@ Audio stays in memory and is discarded after processing — nothing is recorded 
 
 ## Language of the source
 
-The interface, the configuration file and this README are English. **Comments and docstrings inside the code are still German**, as are the labels of the self-test — this started as a personal tool. That is on the list; it does not affect how the program behaves.
+The interface comes in five languages (see above); the configuration file and this README are English. **Comments and docstrings inside the code are still German**, as are the labels of the self-test and the console output — this started as a personal tool. That is on the list; it does not affect how the program behaves.
 
 ## Licence
 
@@ -123,11 +124,12 @@ Es diktiert, räumt auf und übersetzt: **Deutsch und Englisch sind gleichermaß
 - **Übersetzen.** Tray-Menü → „Übersetzen nach" (Englisch, Deutsch, Spanisch, Italienisch, Russisch). Nach jedem Start wieder aus.
 - **Eigenes Vokabular in zwei Stufen.** Begriffe in `dictionary.txt`, Hörfehler in `aliases.txt`, Feinschliff mit `--calibrate`. Whispers Prompt fasst nur rund 224 Tokens und lässt den Rest einer längeren Liste stillschweigend weg, deshalb geht alles unterhalb der Markerzeile `# === NUR-CLEANUP` nur noch ans Aufräum-Modell.
 - **Einfügen, das nicht stört.** Textfeld im Fokus: wird direkt eingefügt. Sonst liegt der Text in der Zwischenablage und du drückst Strg+V, wo du willst.
+- **Spricht deine Sprache.** Die Oberfläche — Tray-Menü, Meldungen, Anzeigefeld — gibt es auf Englisch, Deutsch, Russisch, Spanisch und Italienisch. Beim ersten Start richtet sie sich nach der Windows-Anzeigesprache, ist also sofort richtig, und im Tray unter *Sprache* jederzeit umstellbar. Eine weitere Sprache ist ein Block in [`wf/i18n.py`](wf/i18n.py), der Selbsttest prüft dann auf Vollständigkeit.
 - **Die letzten Diktate ein Klick entfernt.** Jeder gelieferte Text landet zusätzlich in einer lokalen Log-Datei, das Tray-Menü öffnet sie. Was aus der Zwischenablage verschwunden ist, ist damit nicht weg. Standard: 14 Tage, verlässt den Rechner nie.
 
 ### Was es nicht kann
 
-Nur Windows. Nicht schneller als die Cloud-Dienste (der Gewinn ist Datenschutz, deutsche Qualität und null laufende Kosten). Ohne NVIDIA-Grafikkarte deutlich langsamer. Kein Support-Versprechen.
+Nur Windows. Nicht schneller als die Cloud-Dienste (der Gewinn ist Datenschutz, Genauigkeit in deiner Sprache und null laufende Kosten). Ohne NVIDIA-Grafikkarte deutlich langsamer. Kein Support-Versprechen.
 
 ### Installation
 
@@ -155,7 +157,7 @@ Audio bleibt im Arbeitsspeicher und wird danach verworfen, es wird nichts aufgez
 
 ### Sprache im Quelltext
 
-Oberfläche, Konfiguration und diese Datei sind englisch. **Die Kommentare im Code sind noch deutsch**, ebenso die Beschriftungen der Selbsttests — das Werkzeug ist als persönliches Projekt entstanden. Steht auf der Liste, ändert am Verhalten nichts.
+Die Oberfläche gibt es in fünf Sprachen (siehe oben), Konfiguration und diese Datei sind englisch. **Die Kommentare im Code sind noch deutsch**, ebenso die Beschriftungen der Selbsttests — das Werkzeug ist als persönliches Projekt entstanden. Steht auf der Liste, ändert am Verhalten nichts.
 
 ### Lizenz
 

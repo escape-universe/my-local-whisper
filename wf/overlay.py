@@ -48,7 +48,8 @@ class Overlay:
         with self._lock:
             self._state, self._t0, self._text = "recording", time.time(), ""
 
-    def processing(self, eta_s: float, text: str = "listening") -> None:
+    def processing(self, eta_s: float, text: str = "") -> None:
+        text = text or i18n.t("badge_listening")
         with self._lock:
             self._state, self._t0, self._eta, self._text, self._pct = "processing", time.time(), max(0.3, eta_s), text, 0.0
 
@@ -63,11 +64,13 @@ class Overlay:
                 self._t0 = time.time() - done * 0.01 * max(0.3, eta_left_s) / max(0.01, 1 - done * 0.01)
                 self._eta = (time.time() - self._t0) + max(0.3, eta_left_s)
 
-    def done(self, text: str = "Ready - press Ctrl+V", seconds: float = 1.3) -> None:
+    def done(self, text: str = "", seconds: float = 1.3) -> None:
+        text = text or i18n.t("badge_ready")
         with self._lock:
             self._state, self._text, self._pct, self._until = "done", text, 100.0, time.time() + seconds
 
-    def error(self, text: str = "Fehler", seconds: float = 2.0) -> None:
+    def error(self, text: str = "", seconds: float = 2.0) -> None:
+        text = text or i18n.t("badge_error")
         with self._lock:
             self._state, self._text, self._until = "error", text, time.time() + seconds
 

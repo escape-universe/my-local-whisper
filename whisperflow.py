@@ -33,6 +33,7 @@ from wf import cleanup as cleanup_mod
 from wf import config as config_mod
 from wf import context as context_mod
 from wf import focus as focus_mod
+from wf import i18n
 from wf import inject as inject_mod
 from wf import lang as lang_mod
 from wf import overlay as overlay_mod
@@ -152,10 +153,10 @@ class Pipeline:
         if not text or not target:
             return text, ""
         t0 = time.time()
-        self.overlay.phase("translating")
+        self.overlay.phase(i18n.t("badge_translating"))
         out, ok = self.cleaner.translate(text, target)
         if not ok:
-            return text, "Übersetzung nach " + lang_mod.name_de(target) + " fehlgeschlagen — Originaltext eingefügt."
+            return text, i18n.t("note_translate_failed", lang=lang_mod.name_native(target))
         print("[translate] -> " + target + " in " + str(round(time.time() - t0, 1)) + "s")
         return out, ""
 
@@ -173,7 +174,7 @@ class Pipeline:
         if cancelled():
             result["note"] = "verworfen (neue Aufnahme vor STT)"
             return result
-        self.overlay.phase("listening")
+        self.overlay.phase(i18n.t("badge_listening"))
         tail = self.transcribe(arr) if arr is not None and len(arr) else ""
         result["raw"] = tail
         # Whispers ERKANNTE Sprache (nicht die konfigurierte) — sie bindet Cleanup + Guard.
@@ -196,7 +197,7 @@ class Pipeline:
         was_cleaned = False
         cleaned_tail = ""
         if tail:
-            self.overlay.phase("cleaning up", eta_left_s=0.4 + len(tail.split()) * 0.03)
+            self.overlay.phase(i18n.t("badge_cleaning"), eta_left_s=0.4 + len(tail.split()) * 0.03)
             raw_fixed, a1 = self.aliases.fix(tail)
             cleaned_tail, was_cleaned = self.cleaner.clean(raw_fixed, ctx["category"], self.last_language)
             cleaned_tail, a2 = self.aliases.fix(cleaned_tail)
@@ -311,7 +312,7 @@ class Pipeline:
             return "clipboard" if ok else "failed"
         # Auto-Paste-Modi (clipboard / sendinput): UIPI: Admin-Fenster schluckt Injektion still (R1)
         if self._ui.get("notify_on_blocked_window", True) and context_mod.is_foreground_elevated():
-            msg = "Target window runs as administrator, text NOT pasted. Use a window without admin rights."
+            msg = i18n.t("note_admin_window")
             print(f"[inject] {msg}")
             if self.tray:
                 self.tray.notify(msg)
@@ -329,7 +330,7 @@ class Pipeline:
             _beep("error")
             print(f"[deliver] NOT placed on clipboard: {text!r}")
             if self.tray:
-                self.tray.notify("Clipboard not writable, the text is in the history file (data/history.log).")
+                self.tray.notify(i18n.t("note_clipboard_failed", file=(self.history_path.name if self.history_path else "?")))
             return "failed"
         why = ""
         if not ctx.get("editable"):
@@ -346,7 +347,7 @@ class Pipeline:
                     why = f"jetzt kein Textfeld ({f['why']})"
         if why:
             print(f"[deliver] clipboard only: {why}")
-            label = "Ready - Ctrl+V (appended)" if appended else "Ready - press Ctrl+V"
+            label = i18n.t("badge_ready_appended") if appended else i18n.t("badge_ready")
             self.overlay.done(label)
             if self._ui.get("beep_on_ready", True):
                 _beep("ok")
@@ -354,7 +355,7 @@ class Pipeline:
                 self.tray.notify(_preview(text), title=label)
             return "clipboard"
         inject_mod.paste_ctrl_v()
-        self.overlay.done("Pasted")
+        self.overlay.done(i18n.t("badge_pasted"))
         if self._ui.get("beep_on_ready", True):
             _beep("pasted")
         print("[deliver] pasted (text field had focus); the text also stays on the clipboard")
@@ -363,17 +364,17 @@ class Pipeline:
     def _to_clipboard_and_notify(self, text: str, appended: bool = False) -> bool:
         ok = inject_mod.to_clipboard(text)
         if ok:
-            label = "Ready - Ctrl+V (appended)" if appended else "Ready - press Ctrl+V"
+            label = i18n.t("badge_ready_appended") if appended else i18n.t("badge_ready")
             self.overlay.done(label)
             if self._ui.get("beep_on_ready", True):
                 _beep("ok")
             if self._ui.get("notify_on_ready", True) and self.tray:
                 self.tray.notify(_preview(text), title=label)
         else:
-            self.overlay.error("Clipboard locked")
+            self.overlay.error(i18n.t("badge_clipboard_locked"))
             _beep("error")
             if self.tray:
-                self.tray.notify("Clipboard not writable, the text is in the history file (data/history.log).")
+                self.tray.notify(i18n.t("note_clipboard_failed", file=(self.history_path.name if self.history_path else "?")))
             print(f"[deliver] NOT placed on clipboard: {text!r}")
         return ok
 
@@ -410,6 +411,11 @@ class App:
         self.discard_on_new = bool(ui.get("discard_pending_on_new_recording", True))
         self.discard_max_s = float(ui.get("discard_only_if_shorter_than_s", 30))
         state = _load_state()
+        # Oberflaechensprache (09.09.2026): config.yaml (ui.language) ist die Vorgabe, die
+        # Tray-Wahl in state.json sticht sie. "auto" = Windows-Anzeigesprache, damit das
+        # Werkzeug bei jedem sofort in seiner Sprache laeuft.
+        self.ui_language = str(state.get("ui_lang") or ui.get("language") or "auto")
+        i18n.set_language(i18n.resolve(self.ui_language))
         self.toggle_mode = bool(state.get("toggle_mode", (cfg.get("hotkey", {}) or {}).get("mode", "hold") == "toggle"))
         # Streaming-Abschnitte der laufenden Aufnahme
         self._parts: list[str] = []
@@ -474,7 +480,7 @@ class App:
                 limit_warned = True
                 _beep("error")
                 if self.tray:
-                    self.tray.notify("Recording limit reached, finishing the recording now.")
+                    self.tray.notify(i18n.t("note_limit_reached"))
                 self._stop_recording()
                 break
             chunk = self._recorder.drain_until_silence(self.chunk_seconds, self.chunk_silence_s)
@@ -538,7 +544,7 @@ class App:
                 print(f"[dictation] #{gen} {res['note']}")
                 self.pipeline.overlay.hide()
             elif res.get("note") == "leeres Transkript":
-                self.pipeline.overlay.error("nothing understood", 1.5)
+                self.pipeline.overlay.error(i18n.t("badge_nothing"), 1.5)
             else:
                 al = f" aliases={res['aliases']}" if res.get("aliases") else ""
                 print(f"[dictation] #{gen} ({self._pending.get(gen, 0):.0f} s recorded) stt {res.get('stt_s','?')}s + cleanup "
@@ -546,10 +552,10 @@ class App:
                       f"-> {_preview(res.get('cleaned',''), 120)!r}")
         except Exception as e:  # noqa: BLE001
             print(f"[dictation] error: {e}")
-            self.pipeline.overlay.error("Error, see console")
+            self.pipeline.overlay.error(i18n.t("badge_error_console"))
             _beep("error")
             if self.tray:
-                self.tray.notify(f"Fehler: {e}")
+                self.tray.notify(i18n.t("note_error", error=e))
         finally:
             self._pending.pop(gen, None)
             with self._busy_lock:
@@ -573,9 +579,9 @@ class App:
         diktiert der Nutzer wieder normal in seiner Sprache (Entscheidung 08.09.2026)."""
         self.pipeline.translate_to = code or ""
         if code:
-            print(f"[app] translation on - everything is translated into {lang_mod.name_en(code)}.")
+            print(f"[app] Übersetzungsmodus: alles wird nach {lang_mod.name_en(code)} übersetzt.")
             if self.tray:
-                self.tray.notify(f"Übersetzungsmodus an: {lang_mod.name_de(code)}")
+                self.tray.notify(i18n.t("note_translate_on", lang=lang_mod.name_native(code)))
         else:
             print("[app] translation off - the text stays in the language you speak.")
 
@@ -589,24 +595,24 @@ class App:
         if t and inject_mod.to_clipboard(t):
             _beep("ok")
             if self.tray:
-                self.tray.notify(_preview(t), title="Letzter Text in der Zwischenablage")
+                self.tray.notify(_preview(t), title=i18n.t("note_last_text"))
         elif self.tray:
-            self.tray.notify("Kein Text im Verlauf.")
+            self.tray.notify(i18n.t("note_no_text"))
 
     def open_history(self) -> str:
         """Verlaufsdatei im Standard-Editor oeffnen (Tray -> "Open the log", 09.09.2026).
         Rueckgabe: '' = geoeffnet, sonst der Grund (fuer Tray-Meldung und Test)."""
         p = self.pipeline.history_path
         if p is None:
-            return "No history configured (config.yaml: ui.history_file)."
+            return i18n.t("note_no_history_configured")
         if not p.exists():
-            return f"No history yet ({p.name} appears with your first dictation)."
+            return i18n.t("note_no_history_yet", file=p.name)
         try:
             import os
             os.startfile(str(p))  # noqa: S606 — Windows-Standardprogramm fuer .log/.txt
             return ""
         except OSError as e:
-            return f"Could not open the history file: {e}"
+            return i18n.t("note_history_open_failed", error=e)
 
     def _open_log(self) -> None:
         grund = self.open_history()
@@ -614,6 +620,15 @@ class App:
             print(f"[history] {grund}")
             if self.tray:
                 self.tray.notify(grund)
+
+    def _set_ui_language(self, setting: str) -> None:
+        """Tray -> Sprache. setting = 'auto' oder ein Code aus i18n.LANGUAGES."""
+        self.ui_language = setting
+        code = i18n.set_language(i18n.resolve(setting))
+        st = _load_state(); st["ui_lang"] = setting; _save_state(st)
+        print(f"[app] UI-Sprache: {code} (Einstellung: {setting})")
+        if self.tray:
+            self.tray.notify(i18n.t("note_language_set", lang=i18n.label(code)))
 
     def _quit(self) -> None:
         self._stop.set()
@@ -644,7 +659,8 @@ class App:
             from wf.tray import Tray
             self.tray = Tray(self._toggle, self._quit, on_toggle_mode=self._set_toggle_mode,
                              on_copy_last=self._copy_last, toggle_mode=self.toggle_mode,
-                             on_translate_to=self._set_translate_to, on_open_log=self._open_log)
+                             on_translate_to=self._set_translate_to, on_open_log=self._open_log,
+                             on_set_ui_language=self._set_ui_language, ui_language=self.ui_language)
             self.pipeline.tray = self.tray
             self.tray.set_state("idle")
             # pystray.run() blockiert im Main-Thread; Hotkey-Listener laeuft eh separat

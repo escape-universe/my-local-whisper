@@ -11,12 +11,14 @@ from __future__ import annotations
 import re
 
 # Zielsprachen des Uebersetzungsmodus (Entscheidung 08.09.2026). Reihenfolge = Tray-Menue.
+# Beschriftung = der Sprachname in der Sprache selbst. So passt das Menue zu jeder
+# Oberflaechensprache, ohne eine eigene Uebersetzungstabelle pro Sprache (09.09.2026).
 TARGETS: list[tuple[str, str]] = [
-    ("en", "Englisch"),
+    ("en", "English"),
     ("de", "Deutsch"),
-    ("es", "Spanisch"),
-    ("it", "Italienisch"),
-    ("ru", "Russisch"),
+    ("es", "Español"),
+    ("it", "Italiano"),
+    ("ru", "Русский"),
 ]
 
 _NAMES = {
@@ -24,7 +26,7 @@ _NAMES = {
     "fr": "French", "nl": "Dutch", "pl": "Polish", "tr": "Turkish", "pt": "Portuguese",
 }
 
-_NAMES_DE = dict(TARGETS)
+_NAMES_NATIVE = dict(TARGETS)
 
 
 def name_en(code: str) -> str:
@@ -32,9 +34,9 @@ def name_en(code: str) -> str:
     return _NAMES.get((code or "").lower(), (code or "the source language"))
 
 
-def name_de(code: str) -> str:
-    """Sprachname fuer Tray/Meldungen an der Nutzer."""
-    return _NAMES_DE.get((code or "").lower(), _NAMES.get((code or "").lower(), code or "?"))
+def name_native(code: str) -> str:
+    """Sprachname in der Sprache selbst — fuer Tray-Menue und Meldungen."""
+    return _NAMES_NATIVE.get((code or "").lower(), _NAMES.get((code or "").lower(), code or "?"))
 
 
 # --- Deterministischer Guard: hat die Ausgabe die Sprache gewechselt? -------------
