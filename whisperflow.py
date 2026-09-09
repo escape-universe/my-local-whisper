@@ -511,13 +511,22 @@ class App:
         self._pending[gen] = duration
         if self.toggle_mode:
             _beep("stop")
-        self.pipeline.overlay.processing(overlay_mod.estimate_seconds(len(arr) / self._recorder.samplerate))
-        # Fenster + Fokus JETZT merken (beim Stoppen), nicht erst nach der Transkription
-        ctx = context_mod.foreground_info(self.cfg)
-        if self.pipeline.method == "hybrid":
-            f = focus_mod.editable_focus()
-            ctx["editable"] = f["editable"]
-            ctx["focus_why"] = f["why"]
+        # Alles zwischen "Aufnahme ist aus" und "Verarbeitung laeuft" ist Beiwerk (Anzeige, Fenster,
+        # Fokus). Faellt hier etwas aus, darf das NIE das Diktat verschlucken: Die Aufnahme ist dann
+        # schon gestoppt, aber ohne den Verarbeitungs-Thread bliebe der Text weg und das rote Feld
+        # haengen (Vorfall 09.09.2026: fehlender i18n-Import in overlay.py -> "kann nicht mehr
+        # beenden"). Deshalb gefangen und mit leerem Kontext weitergemacht.
+        ctx: dict = {}
+        try:
+            self.pipeline.overlay.processing(overlay_mod.estimate_seconds(len(arr) / self._recorder.samplerate))
+            # Fenster + Fokus JETZT merken (beim Stoppen), nicht erst nach der Transkription
+            ctx = context_mod.foreground_info(self.cfg)
+            if self.pipeline.method == "hybrid":
+                f = focus_mod.editable_focus()
+                ctx["editable"] = f["editable"]
+                ctx["focus_why"] = f["why"]
+        except Exception as e:  # noqa: BLE001
+            print(f"[dictation] Stopp-Beiwerk fehlgeschlagen ({e}) -> verarbeite trotzdem weiter")
         with self._busy_lock:
             self._busy += 1
         if self.tray:

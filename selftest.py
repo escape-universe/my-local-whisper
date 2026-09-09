@@ -387,6 +387,53 @@ def test_i18n() -> None:
     check("i18n: Zielsprachen tragen ihren eigenen Namen", dict(lg.TARGETS)["ru"] == i18n.LANGUAGES[2][1])
 
 
+
+def test_overlay_und_namen() -> None:
+    """09.09.2026 (Vorfall "kann nicht mehr beenden"): Das Anzeigefeld holt seine Texte aus i18n —
+    der Import fehlte, also flog beim Loslassen ein NameError im Hotkey-Worker, die Aufnahme wurde
+    nie verarbeitet und das rote Feld blieb stehen. Zwei Tests, damit das nicht wiederkommt:
+    (1) alle Overlay-Zustaende laufen durch, auch ohne Fenster; (2) ein Namens-Scan ueber alle
+    Module (verwendeter Name, der nirgends definiert oder importiert ist)."""
+    import ast as _ast, builtins as _bi
+    from pathlib import Path as _Path
+    root = _Path(__file__).resolve().parent
+    from wf import overlay as ov
+    o = ov.Overlay(enabled=False)   # ohne Tk-Fenster, die Textwahl passiert trotzdem
+    for schritt, fn in (("recording", o.recording),
+                        ("processing", lambda: o.processing(2.0)),
+                        ("phase", lambda: o.phase("x")),
+                        ("done", o.done), ("error", o.error), ("hide", o.hide)):
+        try:
+            fn(); ok = True; detail = ""
+        except Exception as e:  # noqa: BLE001
+            ok, detail = False, f"{type(e).__name__}: {e}"
+        check(f"overlay: {schritt} laeuft ohne Fehler", ok, detail)
+
+    builtin = set(dir(_bi))
+    treffer = []
+    for f in sorted(root.glob("wf/*.py")) + [root / "whisperflow.py"]:
+        tree = _ast.parse(f.read_text(encoding="utf-8"))
+        da = {"__file__", "__name__", "__doc__"}
+        for n in _ast.walk(tree):
+            if isinstance(n, (_ast.Import, _ast.ImportFrom)):
+                da.update((a.asname or a.name).split(".")[0] for a in n.names)
+            elif isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef, _ast.ClassDef)):
+                da.add(n.name)
+            elif isinstance(n, _ast.Name) and isinstance(n.ctx, _ast.Store):
+                da.add(n.id)
+            elif isinstance(n, _ast.arg):
+                da.add(n.arg)
+            elif isinstance(n, _ast.ExceptHandler) and n.name:
+                da.add(n.name)
+            elif isinstance(n, (_ast.Global, _ast.Nonlocal)):
+                da.update(n.names)
+        benutzt = {n.id for n in _ast.walk(tree) if isinstance(n, _ast.Name) and isinstance(n.ctx, _ast.Load)}
+        fehlt = sorted(benutzt - da - builtin)
+        if fehlt:
+            treffer.append(f"{f.name}: {', '.join(fehlt)}")
+    check("module: kein Name ohne Import/Definition", not treffer, "; ".join(treffer))
+
+
 def test_fidelity_and_tiers() -> None:
     """09.09.2026: Treue-Guard (Zahlen/Adressen/Auslassung) + zweistufiges Woerterbuch."""
     from wf import fidelity as fd
@@ -546,6 +593,7 @@ def run_selftests() -> int:
     test_fidelity_and_tiers()     # fokus-frei
     test_tray_open_log()          # fokus-frei
     test_i18n()                   # fokus-frei
+    test_overlay_und_namen()      # fokus-frei
     test_aliases_focus_employees()
     test_long_dictation_parts()
     test_injection()  # GUI zuletzt (oeffnet kurz ein Fenster)

@@ -19,6 +19,8 @@ import sys
 import threading
 import time
 
+from wf import i18n
+
 _OFFSET = (22, 24)      # Abstand vom Mauszeiger (Pixel)
 _W, _H = 150, 30
 
