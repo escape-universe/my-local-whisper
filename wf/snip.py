@@ -62,11 +62,11 @@ _WM_KEYDOWN, _WM_KEYUP = 0x0100, 0x0101
 _WM_SYSKEYDOWN, _WM_SYSKEYUP = 0x0104, 0x0105
 
 _LABELS = {
-    "shift_r": "rechte Umschalt-Taste",
-    "menu": "Kontextmenue-Taste (links neben der rechten Strg)",
-    "scroll_lock": "Rollen",
+    "shift_r": "right Shift key",
+    "menu": "context-menu key (left of the right Ctrl)",
+    "scroll_lock": "Scroll Lock",
     "pause": "Pause",
-    "cmd_r": "rechte Windows-Taste",
+    "cmd_r": "right Windows key",
     "alt_gr": "AltGr",
 }
 
@@ -185,7 +185,7 @@ def _in_den_vordergrund(root) -> bool:
                 u.AttachThreadInput(tid_fg, tid_me, False)
         return u.GetForegroundWindow() == hwnd
     except Exception as e:  # noqa: BLE001
-        print("[snip] Vordergrund: %s" % e)
+        print("[snip] foreground: %s" % e)
         return False
 
 

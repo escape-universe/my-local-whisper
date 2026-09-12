@@ -107,11 +107,11 @@ def run_calibration(cfg: dict, nur: str = "") -> int:
         # Nur einen Abschnitt ueben (z.B. die englischen Begriffe) — 6 Runden statt 30.
         gewaehlt = section_terms(cfg, nur)
         if not gewaehlt:
-            print(f"[calibrate] Kein Abschnitt in dictionary.txt passt zu {nur!r}. "
-                  f"Abschnitte sind die Zeilen '# === NAME ==='.")
+            print(f"[calibrate] No section in dictionary.txt matches {nur!r}. "
+                  f"Sections are the lines '# === NAME ==='.")
             return 2
         terms = gewaehlt
-        print(f"[calibrate] Nur Abschnitt {nur!r}: {len(terms)} Begriffe")
+        print(f"[calibrate] section {nur!r} only: {len(terms)} terms")
     alias_path = config_mod.load_aliases_path(cfg)
     fixer = aliases_mod.AliasFixer(aliases_mod.load_aliases(alias_path))
     seed = config_mod.dictionary_prompt_seed(base + [n for n in first if n not in base])

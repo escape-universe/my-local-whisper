@@ -84,50 +84,50 @@ def masse(f: Path) -> str:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Neue Bildschirmfotos auflisten")
-    ap.add_argument("--minuten", type=float, default=None, help="Rueckschau in Minuten")
-    ap.add_argument("--seit", default=None, help="ISO-Zeitpunkt, z.B. 2026-09-10T13:00:00")
-    ap.add_argument("--max", type=int, default=3, help="hoechstens so viele Bilder nennen (Standard 3)")
-    ap.add_argument("--warten", type=float, default=0, help="so viele Sekunden auf ein neues Bild warten")
-    ap.add_argument("--alle", action="store_true", help="ganzer Ordner, ohne Zeitgrenze")
-    ap.add_argument("--merken", action="store_true", help="Zeitstempel setzen (bis hier gesehen)")
+    ap = argparse.ArgumentParser(description="List new screenshots")
+    ap.add_argument("--minuten", type=float, default=None, help="look back this many minutes")
+    ap.add_argument("--seit", default=None, help="ISO timestamp, e.g. 2026-09-10T13:00:00")
+    ap.add_argument("--max", type=int, default=3, help="name at most this many images (default 3)")
+    ap.add_argument("--warten", type=float, default=0, help="wait this many seconds for a new image")
+    ap.add_argument("--alle", action="store_true", help="whole folder, no time limit")
+    ap.add_argument("--merken", action="store_true", help="set the marker (seen up to here)")
     a = ap.parse_args()
 
     folder = ordner()
     if a.alle:
         seit = 0.0
-        woher = "ganzer Ordner"
+        woher = "whole folder"
     elif a.seit:
         try:
             seit = datetime.fromisoformat(a.seit).timestamp()
         except ValueError:
-            print("FEHLER: --seit braucht einen ISO-Zeitpunkt wie 2026-09-10T13:00:00")
+            print("ERROR: --seit needs an ISO timestamp like 2026-09-10T13:00:00")
             return 1
-        woher = "seit %s" % a.seit
+        woher = "since %s" % a.seit
     elif a.minuten is not None:
         seit = time.time() - a.minuten * 60
-        woher = "letzte %g Minuten" % a.minuten
+        woher = "last %g minutes" % a.minuten
     else:
         m = marker_lesen()
         standard = time.time() - 600
         seit = max(m, standard)
-        woher = "seit dem letzten Ansehen" if m > standard else "letzte 10 Minuten"
+        woher = "since the last look" if m > standard else "last 10 minutes"
 
     treffer = bilder_seit(folder, seit)
     if not treffer and a.warten > 0:
         ziel = time.time() + a.warten
-        print("WARTE auf ein neues Bild (bis zu %g s) — jetzt den Ausschnitt machen ..." % a.warten)
+        print("WAITING for a new image (up to %g s) - take the screenshot now ..." % a.warten)
         while time.time() < ziel and not treffer:
             time.sleep(0.5)
             treffer = bilder_seit(folder, seit)
 
     if not treffer:
-        print("KEINE neuen Bilder (%s) in %s" % (woher, folder))
+        print("NO new images (%s) in %s" % (woher, folder))
         return 3
 
     zuviel = max(0, len(treffer) - a.max) if a.max > 0 else 0
     zeigen = treffer[-a.max:] if a.max > 0 else treffer
-    print("%d neue(s) Bild(er) (%s) in %s" % (len(treffer), woher, folder))
+    print("%d new image(s) (%s) in %s" % (len(treffer), woher, folder))
     jetzt = time.time()
     for f in zeigen:
         st = f.stat()
@@ -135,8 +135,8 @@ def main() -> int:
             f, datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds"),
             int(jetzt - st.st_mtime), masse(f), st.st_size // 1024))
     if zuviel:
-        print("HINWEIS: %d aeltere Bilder im Zeitraum nicht genannt (--max %d). "
-              "Nur bei Bedarf mit hoeherem --max erneut aufrufen." % (zuviel, a.max))
+        print("NOTE: %d older images in this window not listed (--max %d). "
+              "Call again with a higher --max only if you need them." % (zuviel, a.max))
     if a.merken:
         marker_setzen(treffer[-1].stat().st_mtime)
     return 0

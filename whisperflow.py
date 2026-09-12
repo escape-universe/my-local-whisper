@@ -545,7 +545,7 @@ class App:
                 ctx["editable"] = f["editable"]
                 ctx["focus_why"] = f["why"]
         except Exception as e:  # noqa: BLE001
-            print(f"[dictation] Stopp-Beiwerk fehlgeschlagen ({e}) -> verarbeite trotzdem weiter")
+            print(f"[dictation] post-stop extras failed ({e}) -> processing anyway")
         with self._busy_lock:
             self._busy += 1
         if self.tray:
@@ -657,7 +657,7 @@ class App:
 
     # ---------------- Bildausschnitt ----------------
     def do_snip(self) -> str:
-        """Bildschirm einfrieren -> Rahmen aufziehen -> Zwischenablage + PNG.
+        """Bildschirm einfrieren -> drag a region -> Zwischenablage + PNG.
         Rueckgabe: '' = Bild gemacht, sonst der Grund (Abbruch/Fehler) — auch fuer den Test.
 
         Reihenfolge ist wichtig: ERST einfrieren, DANN das eigene Anzeigefeld verstecken und die
@@ -682,12 +682,12 @@ class App:
                     _beep("ok")
             else:
                 self.pipeline.overlay.error(i18n.t("badge_snip_failed"), 1.5)
-            print(f"[snip] {groesse} -> Zwischenablage={in_ablage}, Datei={datei.name}")
+            print(f"[snip] {groesse} -> clipboard={in_ablage}, file={datei.name}")
             if self.tray:
                 self.tray.notify(i18n.t("note_snip_saved", size=groesse, file=datei.name))
             return "" if in_ablage else "Clipboard locked"
         except Exception as e:  # noqa: BLE001
-            print(f"[snip] Fehler: {e}")
+            print(f"[snip] error: {e}")
             self.pipeline.overlay.error(i18n.t("badge_snip_failed"), 1.5)
             if self.tray:
                 self.tray.notify(i18n.t("note_error", error=e))
@@ -705,25 +705,25 @@ class App:
             self.pipeline.overlay.hide()
             time.sleep(0.12)          # das eigene Anzeigefeld soll nicht mit aufs Bild
             bild, ox, oy = snip_mod.grab_screen()
-            wo = "alle Monitore"
+            wo = "all monitors"
             if self.snip_full_scope != "alle":
                 # nur der Monitor unter der Maus: halb so grosses Bild, halb so viel Kontext
                 r = snip_mod.monitor_rect()
                 if r:
                     bild = bild.crop((r[0] - ox, r[1] - oy, r[2] - ox, r[3] - oy))
-                    wo = "Monitor unter der Maus"
+                    wo = "the monitor under the mouse"
             in_ablage = snip_mod.to_clipboard(bild)
             datei = snip_mod.save_image(bild, self.snip_folder)
             groesse = "%d x %d" % bild.size
             self.pipeline.overlay.done(i18n.t("badge_snip_full"))
             if self.snip_beep:
                 _beep("ok")
-            print(f"[snip] ganzer Bildschirm ({wo}) {groesse} -> Zwischenablage={in_ablage}, Datei={datei.name}")
+            print(f"[snip] whole screen ({wo}) {groesse} -> clipboard={in_ablage}, file={datei.name}")
             if self.tray:
                 self.tray.notify(i18n.t("note_snip_full", size=groesse, file=datei.name))
             return "" if in_ablage else "Clipboard locked"
         except Exception as e:  # noqa: BLE001
-            print(f"[snip] Fehler (ganzer Bildschirm): {e}")
+            print(f"[snip] error (whole screen): {e}")
             self.pipeline.overlay.error(i18n.t("badge_snip_failed"), 1.5)
             return str(e)
         finally:
@@ -788,16 +788,16 @@ class App:
                 on_double=(self.do_fullscreen if self.snip_double else None),
                 double_tap_ms=self.snip_double_ms)
             self._snip_watcher.start()
-            print(f"[snip] Bildausschnitt aktiv: {snip_mod.key_label(self.snip_key)} -> Rahmen aufziehen"
-                  + (", 2x tippen -> ganzer Bildschirm. " if self.snip_double
-                     else " (Enter im Auswahl-Fenster = ganzer Bildschirm). ")
-                  + f"Ordner {self.snip_folder.name}, Aufbewahrung {self.snip_keep_days} Tage"
-                  + (f", {weg} alte geloescht" if weg else ""))
+            print(f"[snip] screenshots on: {snip_mod.key_label(self.snip_key)} -> drag a region"
+                  + (", double-tap -> whole screen. " if self.snip_double
+                     else " (Enter in the selection window = whole screen). ")
+                  + f"folder {self.snip_folder.name}, kept {self.snip_keep_days} days"
+                  + (f", {weg} old ones deleted" if weg else ""))
         mode = self.pipeline.method
-        hint = {"hybrid": "Textfeld mit Fokus -> direkt eingefuegt, sonst Zwischenablage (Strg+V).",
-                "clipboard_only": "Text in die Zwischenablage (Strg+V).",
-                }.get(mode, f"fuegt Text am Cursor ein ({mode}).")
-        how = "einmal druecken = an, nochmal = aus (Umschalt-Modus)" if self.toggle_mode else "gedrueckt halten"
+        hint = {"hybrid": "a focused text field gets the text directly, otherwise the clipboard (Ctrl+V).",
+                "clipboard_only": "text goes to the clipboard (Ctrl+V).",
+                }.get(mode, f"inserts text at the cursor ({mode}).")
+        how = "press once = on, again = off (toggle mode)" if self.toggle_mode else "hold it down"
         print(f"[app] ready. '{key}' {how}. Then -> {hint}")
 
         self.pipeline.tray = None
@@ -885,7 +885,7 @@ def main() -> int:
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--calibrate", action="store_true", help="Begriffe vorlesen, Hoer-Fehler als Alias uebernehmen")
     ap.add_argument("--nur", default="", metavar="ABSCHNITT",
-                    help="nur einen Abschnitt aus dictionary.txt kalibrieren, z.B. --nur englisch")
+                    help="calibrate only one section of dictionary.txt, e.g. --nur english")
     ap.add_argument("--no-tray", action="store_true")
     args = ap.parse_args()
 
