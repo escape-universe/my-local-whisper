@@ -11,12 +11,12 @@ It dictates, it cleans up, and it translates: **English and German are equally a
 > to you. The point is to raise the speed of input and handling when working with agents: our human
 > output — fingers, voice, eyes — has to be as fast as it possibly can.
 >
-> **Read this first: [the idea behind it](docs/IDEA.md).** The software here is one implementation,
-> for one person, on Windows, in 2026 — it will age. The idea will not: **ears, eyes and mouth should
-> run locally and instantly on your own device**, so that the channel between you and your agent stops
-> being the bottleneck. Anyone can rebuild this in an afternoon with a coding agent, fitted to their
-> own hands — [`docs/AGENT-BUILD-GUIDE.md`](docs/AGENT-BUILD-GUIDE.md) is written to be handed
-> straight to yours, including the mistakes we already paid for.
+> That is what this repository is really about — the reasoning is in
+> **[the idea behind it](docs/IDEA.md), worth reading before the code.** The software here is one
+> implementation, for one person, on Windows, in 2026, and it will age; the idea will not. Anyone can
+> rebuild it in an afternoon with a coding agent, fitted to their own hands —
+> [`docs/AGENT-BUILD-GUIDE.md`](docs/AGENT-BUILD-GUIDE.md) is written to be handed straight to yours,
+> including the mistakes we already paid for.
 
 ![Dictating into Notepad: a spoken sentence full of filler words appears as clean text](docs/demo.gif)
 
@@ -124,11 +124,11 @@ Built at [Escape Universe](https://escapeuniverse.de), Nienburg / Hannover / Lei
 > zu machen: Finger, Stimme und Augen sind unsere menschliche Ausgabeseite, und die muss so schnell
 > sein wie irgend möglich.
 >
-> **Zuerst lesen: [die Idee dahinter](docs/IDEA.md).** Die Software ist eine Umsetzung von vielen und
-> altert; die Idee nicht: **Ohren, Augen und Mund sollen lokal und sofort auf dem eigenen Gerät
-> laufen**, damit der Weg zwischen dir und deinem Agenten nicht mehr der Engpass ist. Nachbauen
-> dauert mit einem Coding-Agenten einen Nachmittag — [`docs/AGENT-BUILD-GUIDE.md`](docs/AGENT-BUILD-GUIDE.md)
-> ist dafür geschrieben, genau dem gegeben zu werden, samt der Fehler, die wir schon bezahlt haben.
+> Darum geht es hier eigentlich — die Begründung steht in
+> **[der Idee dahinter](docs/IDEA.md), lesenswert vor dem Code.** Die Software ist eine Umsetzung von
+> vielen und altert; die Idee nicht. Nachbauen dauert mit einem Coding-Agenten einen Nachmittag —
+> [`docs/AGENT-BUILD-GUIDE.md`](docs/AGENT-BUILD-GUIDE.md) ist dafür geschrieben, genau dem gegeben
+> zu werden, samt der Fehler, die wir schon bezahlt haben.
 
 **Diktieren unter Windows, ohne dass etwas den Rechner verlässt.** Taste halten, sprechen, loslassen — der bereinigte Text landet am Cursor oder in der Zwischenablage. Spracherkennung und Textbereinigung laufen lokal auf deiner Grafikkarte.
 

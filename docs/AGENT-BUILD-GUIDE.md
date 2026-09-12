@@ -1,7 +1,13 @@
 # Build brief for an agent: local ears, eyes and mouth
 
-*Hand this file to your coding agent. It is written for the agent, not for a human reader. Read
-[`IDEA.md`](IDEA.md) first for the why; this file is the how, plus the mistakes we already paid for.*
+> **Ears, eyes and mouth should run locally and fast on your own device** — for data that stays
+> yours and an approach that works everywhere, instead of external software that was never adapted
+> to you. The point is to raise the speed of input and handling when working with agents: our human
+> output — fingers, voice, eyes — has to be as fast as it possibly can.
+
+*Hand this file to your coding agent. It is written for the agent, not for a human reader. The
+sentence above is the whole goal; [`IDEA.md`](IDEA.md) unpacks the why. This file is the how, plus
+the mistakes we already paid for.*
 
 ---
 
