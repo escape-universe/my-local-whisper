@@ -138,15 +138,44 @@ ui:
   # dictate again within this many seconds, the new text is appended to it, so a single Ctrl+V
   # brings both. Only happens while the clipboard still holds exactly that previous text, and never
   # after an automatic paste (there the cursor already sits behind the text). 0 = off.
-  append_within_s: 60
+  append_within_s: 0
   # Starting a new recording while the last one is still being processed: the old one is dropped
   # (release the key and press again = "start over"). false = deliver every dictation in order.
   discard_pending_on_new_recording: true
   # ... but only if the old recording was shorter than this many seconds. An accidental key press
   # should not throw away a 15-minute talk; that one is delivered anyway (order is preserved).
-  discard_only_if_shorter_than_s: 30
+  discard_only_if_shorter_than_s: 0
   # Every delivered text is also appended to data/history.log (local only). The tray menu item
   # "Copy last text to clipboard" brings it back if the clipboard has been overwritten since.
   # null = keep no history at all.
   history_file: "data/history.log"
   history_keep_days: 14
+
+# --- Screenshots ----------------------------------------------------------------------------
+# A second key next to dictation: press, the screen freezes, drag a rectangle -> the image is on
+# the clipboard (Ctrl+V) and saved as a PNG. Because the screen is frozen BEFORE the selection
+# opens, open drop-down menus and tooltips are in the picture — the Windows Snipping Tool loses
+# them, because it takes the focus away from the menu.
+snip:
+  enabled: true
+  # Trigger key. Default: the right Shift key — most people type capitals with the left one.
+  # Alternatives: "menu" (context-menu key), "scroll_lock", "pause", "f9", "f10", "f12", "cmd_r".
+  # Do NOT use "alt_gr" on a German keyboard: @ EUR | { } live there.
+  key: "shift_r"
+  # tap  = fires the moment you press (default).
+  # hold = you have to hold the key, fires on release. Use this if the key you picked is one you
+  #        need in daily typing; a letter or a mouse click in between then cancels.
+  mode: "tap"
+  hold_ms: 450             # only used in "hold" mode
+  # Whole screen without dragging: press Enter or Space in the selection window (takes the monitor
+  # the mouse is on). In "hold" mode you can also double-tap the key for it.
+  fullscreen_on_double: false
+  double_tap_ms: 400
+  # "monitor" = only the monitor the mouse is on (default, half the image, half the tokens if you
+  # feed it to a model). "alle" = the whole virtual desktop.
+  fullscreen_scope: "monitor"
+  # Modifier keys (Shift/Ctrl/Alt/Win) are never swallowed, whatever this says.
+  suppress: true
+  folder: "data/images"
+  keep_days: 14            # older images are deleted at startup. 0 = keep forever.
+  beep: true

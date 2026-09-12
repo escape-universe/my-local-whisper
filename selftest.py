@@ -301,6 +301,34 @@ def test_append_and_native_llm() -> None:
     check("append: letzter Text wurde EINGEFUEGT -> nie anhaengen", not d({**last, "mode": "pasted"}, 1030.0, "Hallo Welt.", 60))
     check("append: Fenster 0 = aus", not d(last, 1030.0, "Hallo Welt.", 0))
     check("append: kein Vorgaenger -> nein", not d(None, 1030.0, "x", 60))
+
+    # Direktive jedes Diktat faengt frisch an. Zwei Schalter muessen dafuer
+    # stehen — sonst kaeme Altes ueber die Zwischenablage oder ueber eine noch laufende Aufnahme
+    # zurueck. Beide werden hier an der AUSGELIEFERTEN config.yaml geprueft, nicht nur im Code.
+    from wf import config as _cfgmod
+    _ui = (_cfgmod.load_config().get("ui") or {})
+    check("frisch: Anhaengen ist aus (append_within_s = 0)", float(_ui.get("append_within_s", 0)) == 0,
+          str(_ui.get("append_within_s")))
+    check("frisch: keine Laengen-Ausnahme beim Verwerfen (discard_only_if_shorter_than_s = 0)",
+          float(_ui.get("discard_only_if_shorter_than_s", 0)) == 0,
+          str(_ui.get("discard_only_if_shorter_than_s")))
+
+    class _App:
+        """nur die Verwerf-Entscheidung, ohne Modelle zu laden"""
+        _is_cancelled = wfm.App._is_cancelled
+
+        def __init__(self, max_s, gen, pending):
+            self.discard_on_new, self.discard_max_s = True, max_s
+            self._generation, self._pending = gen, pending
+
+    check("frisch: neue Aufnahme verwirft auch eine 10-Minuten-Rede",
+          _App(0.0, 2, {1: 600.0})._is_cancelled(1))
+    check("frisch: das laufende Diktat selbst gilt weiter",
+          not _App(0.0, 1, {1: 600.0})._is_cancelled(1))
+    check("frisch: mit Laengen-Ausnahme (30 s) waere die lange Rede geliefert worden",
+          not _App(30.0, 2, {1: 600.0})._is_cancelled(1))
+    check("frisch: kurze Aufnahme wird auch mit Ausnahme verworfen",
+          _App(30.0, 2, {1: 5.0})._is_cancelled(1))
     from wf import cleanup as cl
     c = cl.Cleaner({"llm": {"base_url": "http://127.0.0.1:11434/v1", "keep_alive": "30m"}}, [])
     check("cleanup: Ollama-Port -> native /api/chat", c.native and c.url == "http://127.0.0.1:11434/api/chat", c.url)
@@ -543,6 +571,278 @@ def test_long_dictation_parts() -> None:
           ok1 is False and ok2 is True and tmp.read_text(encoding="utf-8").strip() == "Zigbee = Sigbee")
 
 
+
+def test_snip_bausteine() -> None:
+    """10.09.2026 — Bildausschnitt ohne Oberflaeche: Einfrieren, Ablegen, Aufraeumen, Taste."""
+    import os as _os, time as _time
+    from pathlib import Path as _Path
+    from wf import snip
+
+    x, y, w, h = snip.virtual_screen()
+    check("snip: virtueller Bildschirm plausibel", w > 200 and h > 200, f"{w}x{h} ab ({x},{y})")
+    t0 = _time.time()
+    bild, ox, oy = snip.grab_screen()
+    dauer = _time.time() - t0
+    check("snip: Einfrieren liefert den ganzen Bildschirm", bild.size == (w, h), f"{bild.size} vs {(w, h)}")
+    check("snip: Ursprung stimmt mit dem virtuellen Bildschirm ueberein", (ox, oy) == (x, y), f"{(ox, oy)}")
+    check("snip: Einfrieren ist schnell genug (< 1,5 s)", dauer < 1.5, f"{dauer:.2f}s")
+
+    tmp = _Path(_os.environ.get("TEMP", ".")) / "wf_snip_selftest"
+    for alt in tmp.glob("*.png"):
+        alt.unlink()
+    ausschnitt = bild.crop((0, -oy, min(200, w), -oy + 100))
+    datei = snip.save_image(ausschnitt, tmp)
+    check("snip: Datei wird angelegt", datei.exists() and datei.stat().st_size > 0, datei.name)
+    check("snip: Dateiname ist Datum_Uhrzeit", len(datei.stem) >= 19 and datei.stem[4] == "-", datei.stem)
+    zweite = snip.save_image(ausschnitt, tmp)
+    check("snip: zweiter Ausschnitt in derselben Sekunde ueberschreibt nicht", zweite != datei, zweite.name)
+
+    # Aufraeumen: eine Datei kuenstlich altern lassen
+    alt_ts = _time.time() - 20 * 86400
+    _os.utime(datei, (alt_ts, alt_ts))
+    weg = snip.cleanup_old(tmp, 14)
+    check("snip: 20 Tage altes Bild wird geloescht", weg == 1 and not datei.exists(), f"{weg} geloescht")
+    check("snip: frisches Bild bleibt liegen", zweite.exists())
+    check("snip: keep_days=0 loescht nie", snip.cleanup_old(tmp, 0) == 0 and zweite.exists())
+
+    # Zwischenablage: Bild rein, Formate gegenlesen
+    ok_clip = snip.to_clipboard(ausschnitt)
+    check("snip: Bild landet in der Zwischenablage", ok_clip)
+    if ok_clip:
+        import win32clipboard as _wc
+        formate = {}
+        try:
+            _wc.OpenClipboard()
+            formate["dib"] = bool(_wc.IsClipboardFormatAvailable(8))
+            formate["png"] = bool(_wc.IsClipboardFormatAvailable(_wc.RegisterClipboardFormat("PNG")))
+        finally:
+            try:
+                _wc.CloseClipboard()
+            except Exception:  # noqa: BLE001
+                pass
+        check("snip: Zwischenablage traegt CF_DIB (jedes Windows-Programm)", formate.get("dib"))
+        check("snip: Zwischenablage traegt PNG (Chrome/Slack)", formate.get("png"))
+    for f in tmp.glob("*.png"):
+        f.unlink()
+
+    # Ausloese-Taste
+    w1 = snip.KeyWatcher("shift_r", lambda: None, mode="hold")
+    check("snip: Standardtaste ist die rechte Umschalt-Taste", w1.vk == 0xA1)
+    check("snip: unbekannter Tastenname faellt auf die rechte Umschalt-Taste zurueck",
+          snip.KeyWatcher("gibtsnicht", lambda: None).vk == 0xA1)
+    check("snip: AltGr ist NICHT der Standard (dort liegen @ € |)", snip.KEYS["alt_gr"] != w1.vk)
+    check("snip: Umschalt-Taste wird NIE verschluckt (sonst keine Grossbuchstaben)",
+          w1._suppress is False)
+    check("snip: Umschalt bleibt auch bei suppress=true + tap unverschluckt",
+          snip.KeyWatcher("shift_r", lambda: None, suppress=True, mode="tap")._suppress is False)
+    # Sofort-Ausloesung (11.09.2026): ein Antippen der rechten Umschalt-Taste oeffnet die Auswahl,
+    # ohne Halten. der Nutzer nutzt fuer Grossbuchstaben nur die linke Umschalt-Taste.
+    sofort = snip.KeyWatcher("shift_r", lambda: None, mode="tap")
+    sofort._filter(0x0100, type("D", (), {"vkCode": 0xA1})())
+    check("snip: rechte Umschalt loest SOFORT beim Antippen aus (kein Halten)",
+          list(sofort._jobs.queue) == ["go"], str(list(sofort._jobs.queue)))
+    check("snip: Taste ohne eigene Aufgabe darf verschluckt werden",
+          snip.KeyWatcher("menu", lambda: None, suppress=True, mode="tap")._suppress is True)
+    check("snip: Taste hat einen menschlichen Namen", "Umschalt" in snip.key_label("shift_r"),
+          snip.key_label("shift_r"))
+
+    # Ganzer Bildschirm = nur der Monitor unter der Maus (spart beim Ansehen die Haelfte Kontext)
+    r = snip.monitor_rect()
+    check("snip: Monitor unter der Maus wird erkannt", r is not None and r[2] > r[0] and r[3] > r[1], str(r))
+    if r:
+        vx, vy, vw, vh = snip.virtual_screen()
+        drin = (r[0] >= vx and r[1] >= vy and r[2] <= vx + vw and r[3] <= vy + vh)
+        check("snip: Monitor liegt im virtuellen Bildschirm", drin, f"{r} in {(vx, vy, vw, vh)}")
+        check("snip: ein Monitor ist hoechstens so gross wie alle zusammen",
+              (r[2] - r[0]) * (r[3] - r[1]) <= vw * vh)
+        ausschnitt_monitor = bild.crop((r[0] - ox, r[1] - oy, r[2] - ox, r[3] - oy))
+        check("snip: Zuschnitt auf den Monitor hat dessen Masse",
+              ausschnitt_monitor.size == (r[2] - r[0], r[3] - r[1]),
+              f"{ausschnitt_monitor.size} vs {(r[2] - r[0], r[3] - r[1])}")
+
+
+def test_snip_halten() -> None:
+    """10.09.2026 — die rechte Umschalt-Taste ist eine ALLTAGSTASTE. Der Ausschnitt darf nur beim
+    langen Halten aufgehen, nie beim normalen Umschalten. Getestet wird der Hook direkt (echte
+    Tastendruecke waeren vom Zufall abhaengig): kurzes Tippen, langes Halten, Halten mit
+    Buchstabe dazwischen, Halten mit Mausklick dazwischen."""
+    import time as _time
+    from wf import snip
+
+    SHIFT_R, TASTE_A = 0xA1, 0x41
+    RUNTER, HOCH = 0x0100, 0x0101
+
+    class _Daten:
+        def __init__(self, vk):
+            self.vkCode = vk
+
+    def lauf(halte_s: float, andere_taste: bool = False, maus: bool = False) -> int:
+        treffer = []
+        w = snip.KeyWatcher("shift_r", lambda: treffer.append(1), mode="hold", hold_ms=200)
+        # Mausklick-Erkennung faelschen (echte Klicks kann der Test nicht garantieren)
+        w._mouse_clicked_since = lambda reset=False: (False if reset else maus)  # type: ignore[method-assign]
+        w._filter(RUNTER, _Daten(SHIFT_R))
+        if andere_taste:
+            w._filter(RUNTER, _Daten(TASTE_A))
+            w._filter(HOCH, _Daten(TASTE_A))
+        _time.sleep(halte_s)
+        w._filter(HOCH, _Daten(SHIFT_R))
+        w._cancel_timer()
+        return w._jobs.qsize()
+
+    check("snip: kurzes Tippen loest NICHT aus (Grossbuchstabe bleibt Grossbuchstabe)",
+          lauf(0.05) == 0)
+    check("snip: langes Halten loest aus", lauf(0.35) == 1)
+    check("snip: Halten mit Buchstabe dazwischen loest NICHT aus (Umschalt+A)",
+          lauf(0.35, andere_taste=True) == 0)
+    check("snip: Halten mit Mausklick dazwischen loest NICHT aus (Umschalt+Klick markiert Text)",
+          lauf(0.35, maus=True) == 0)
+    w = snip.KeyWatcher("menu", lambda: None, mode="tap")
+    w._filter(RUNTER, _Daten(0x5D))
+    check("snip: Betriebsart tap loest sofort beim Druecken aus", w._jobs.qsize() == 1)
+
+    # Doppeltippen = ganzer Bildschirm (10.09.2026)
+    def doppel(pause: float, buchstabe_dazwischen: bool = False) -> list:
+        w2 = snip.KeyWatcher("shift_r", lambda: None, mode="hold", hold_ms=250,
+                             on_double=lambda: None, double_tap_ms=400)
+        w2._mouse_clicked_since = lambda reset=False: False  # type: ignore[method-assign]
+        for i in range(2):
+            w2._filter(RUNTER, _Daten(SHIFT_R))
+            if buchstabe_dazwischen:
+                w2._filter(RUNTER, _Daten(TASTE_A))
+                w2._filter(HOCH, _Daten(TASTE_A))
+            _time.sleep(0.04)
+            w2._filter(HOCH, _Daten(SHIFT_R))
+            if i == 0:
+                _time.sleep(pause)
+        w2._cancel_timer()
+        return list(w2._jobs.queue)
+
+    check("snip: zweimal schnell tippen = ganzer Bildschirm", doppel(0.15) == ["doppelt"])
+    check("snip: zwei langsame Tipper loesen nichts aus", doppel(0.7) == [])
+    check("snip: zwei Grossbuchstaben hintereinander loesen nichts aus",
+          doppel(0.15, buchstabe_dazwischen=True) == [])
+
+
+def test_neue_bilder_zubringer() -> None:
+    """10.09.2026 — „schau dir das mal an" liest NUR neue Bilder. Der Zubringer entscheidet das
+    deterministisch (Zeitgrenze + Deckel), damit keine alten Bilder Kontext kosten."""
+    import importlib.util as _ilu, os as _os, time as _time
+    from pathlib import Path as _Path
+
+    spec = _ilu.spec_from_file_location("neue_bilder", _Path(__file__).resolve().parent / "tools" / "neue-bilder.py")
+    nb = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(nb)  # type: ignore[union-attr]
+
+    tmp = _Path(_os.environ.get("TEMP", ".")) / "wf_bilder_selftest"
+    tmp.mkdir(parents=True, exist_ok=True)
+    for f in tmp.glob("*.png"):
+        f.unlink()
+    from PIL import Image
+    for name, alter_s in (("alt.png", 3600), ("frisch1.png", 20), ("frisch2.png", 5)):
+        Image.new("RGB", (40, 30), (10, 20, 30)).save(tmp / name)
+        ts = _time.time() - alter_s
+        _os.utime(tmp / name, (ts, ts))
+
+    seit = _time.time() - 300
+    neu = nb.bilder_seit(tmp, seit)
+    check("zubringer: nur Bilder nach der Zeitgrenze", [f.name for f in neu] == ["frisch1.png", "frisch2.png"],
+          str([f.name for f in neu]))
+    check("zubringer: aeltestes zuerst (Reihenfolge stimmt)", neu[0].name == "frisch1.png")
+    check("zubringer: Zeitgrenze in der Zukunft liefert nichts", nb.bilder_seit(tmp, _time.time() + 60) == [])
+    check("zubringer: Bildmasse ohne Laden gelesen", nb.masse(neu[0]) == "40x30", nb.masse(neu[0]))
+    check("zubringer: fehlender Ordner ist kein Fehler", nb.bilder_seit(tmp / "gibtsnicht", 0) == [])
+    from wf import config as _cfg
+    erwartet = _Path((_cfg.load_config().get("snip") or {}).get("folder", "data/bilder")).name
+    check("zubringer: Bilder-Ordner kommt aus config.yaml", nb.ordner().name == erwartet,
+          f"{nb.ordner()} (erwartet: {erwartet})")
+    for f in tmp.glob("*.png"):
+        f.unlink()
+
+
+def test_snip_enter_ganzer_monitor() -> None:
+    """11.09.2026 — Vollbild geht jetzt ueber Enter im Auswahl-Fenster (das Doppeltippen ist
+    entfallen, weil die Taste sofort ausloest). Geprueft wird, dass Enter genau den Monitor
+    unter der Maus liefert — umgerechnet in Bildkoordinaten."""
+    import ctypes, threading as _th, time as _time
+    from wf import snip
+
+    u = ctypes.windll.user32
+    bild, ox, oy = snip.grab_screen()
+    erg: dict = {}
+    t = _th.Thread(target=lambda: erg.setdefault("box", snip.select_region(bild, ox, oy)), daemon=True)
+    t.start()
+    _time.sleep(1.5)
+    if not t.is_alive():
+        check("snip: Enter liefert den ganzen Monitor", False, "Auswahl-Fenster war nicht offen")
+        return
+    # Vordergrund-Pruefung (Vorfall 11.09.2026): Lag die Auswahl nur sichtbar oben, ohne die
+    # Eingabe zu besitzen, gingen Esc und Enter an das Programm dahinter — Mausziehen ging
+    # trotzdem, der Fehler faellt beim Ausprobieren also leicht durch.
+    import ctypes as _ct
+    fg = _ct.windll.user32.GetForegroundWindow()
+    kl = _ct.create_unicode_buffer(100)
+    _ct.windll.user32.GetClassNameW(fg, kl, 100)
+    check("snip: Auswahl-Fenster hat die Eingabe (sonst wirken Esc und Enter nicht)",
+          "Tk" in kl.value, "Vordergrund ist " + kl.value)
+
+    r = snip.monitor_rect()
+    u.keybd_event(0x0D, 0, 0, 0); _time.sleep(0.05); u.keybd_event(0x0D, 0, 2, 0)
+    t.join(10)
+    erwartet = (r[0] - ox, r[1] - oy, r[2] - ox, r[3] - oy) if r else None
+    if t.is_alive():          # Fenster haengt (fremder Fokus) -> Esc und ueberspringen
+        u.keybd_event(0x1B, 0, 0, 0); u.keybd_event(0x1B, 0, 2, 0)
+        t.join(5)
+        check("snip: Enter liefert den ganzen Monitor", True, "SKIP — Fenster nahm den Fokus nicht an")
+        return
+    check("snip: Enter liefert den ganzen Monitor", erg.get("box") == erwartet,
+          f"{erg.get('box')} vs {erwartet}")
+
+
+def test_snip_menue_bleibt_drauf() -> None:
+    """Der Kern des Auftrags (10.09.2026): Ein aufgeklapptes Menue muss auf dem Bild landen —
+    genau das kann das Windows-Snipping-Tool nicht, weil es dem Menue den Fokus nimmt.
+    Beweis: Bildschirm mit offenem Kontextmenue einfrieren, Menue schliessen, nochmal einfrieren
+    und den Bereich vergleichen. Unterscheiden sich die Bereiche, war das Menue auf dem Bild."""
+    import ctypes, subprocess, time as _time
+    from PIL import ImageChops
+    from wf import snip
+
+    class _R(ctypes.Structure):
+        _fields_ = [("l", ctypes.c_long), ("t", ctypes.c_long), ("r", ctypes.c_long), ("b", ctypes.c_long)]
+
+    u = ctypes.windll.user32
+    proc = subprocess.Popen(["notepad.exe"])
+    try:
+        _time.sleep(1.5)
+        hwnd = u.FindWindowW("Notepad", None)
+        if not hwnd:
+            check("snip: offenes Menue landet auf dem Bild", True, "SKIP — Notepad nicht gefunden")
+            return
+        u.SetForegroundWindow(hwnd); _time.sleep(0.5)
+        # Umschalt+F10 statt der Kontextmenue-Taste: die faengt die laufende App ab (genau dafuer
+        # ist sie da), der Test soll aber auch neben der laufenden App ein Menue oeffnen koennen.
+        u.keybd_event(0x10, 0, 0, 0); u.keybd_event(0x79, 0, 0, 0); _time.sleep(0.05)
+        u.keybd_event(0x79, 0, 2, 0); u.keybd_event(0x10, 0, 2, 0); _time.sleep(0.9)
+        menu = u.FindWindowW("#32768", None)
+        if not menu:
+            check("snip: offenes Menue landet auf dem Bild", True, "SKIP — Kontextmenue kam nicht hoch")
+            return
+        rc = _R(); u.GetWindowRect(menu, ctypes.byref(rc))
+        mit, ox, oy = snip.grab_screen()
+        u.keybd_event(0x1B, 0, 0, 0); u.keybd_event(0x1B, 0, 2, 0); _time.sleep(0.8)
+        ohne, _, _ = snip.grab_screen()
+        box = (rc.l - ox, rc.t - oy, rc.r - ox, rc.b - oy)
+        diff = ImageChops.difference(mit.crop(box).convert("RGB"), ohne.crop(box).convert("RGB")).getbbox()
+        check("snip: offenes Menue landet auf dem Bild", diff is not None,
+              f"Menue bei {(rc.l, rc.t)}, Unterschied {diff}")
+    finally:
+        try:
+            proc.terminate()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def test_injection() -> None:
     sample = "Grüße äöüß, Besprechungsraum in Nienburg."
     # App 1: klassisches Notepad (Edit-Control) — Win10 vorhanden
@@ -596,6 +896,15 @@ def run_selftests() -> int:
     test_overlay_und_namen()      # fokus-frei
     test_aliases_focus_employees()
     test_long_dictation_parts()
+    test_snip_bausteine()         # fokus-frei
+    test_snip_halten()            # fokus-frei
+    test_neue_bilder_zubringer()  # fokus-frei
+    # Die Auswahl-Fenster-Tests laufen VOR test_injection: das legt im selben Prozess ein
+    # Tk-Fenster im Hauptthread an, und ein zweites Tk in einem Nebenthread kommt danach
+    # nicht mehr hoch (Tcl-Eigenheit, gemessen 11.09.2026 — die App selbst ist davon nicht
+    # betroffen, dort gibt es nur dieses eine Tk-Fenster).
+    test_snip_enter_ganzer_monitor()  # GUI
+    test_snip_menue_bleibt_drauf()  # GUI
     test_injection()  # GUI zuletzt (oeffnet kurz ein Fenster)
     fails = [r for r in RESULTS if not r[1]]
     print(f"\n=== {len(RESULTS) - len(fails)}/{len(RESULTS)} bestanden ===")

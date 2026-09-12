@@ -19,7 +19,8 @@ It dictates, it cleans up, and it translates: **English and German are equally a
 - **Up to 60 minutes in one go.** Transcription runs while you are still speaking, cut at pauses. After you stop you wait about 5 seconds, whether you spoke for 10 seconds or 20 minutes.
 - **Clean-up, not answers.** A small local language model removes filler words, adds punctuation and applies spoken self-corrections ("make that seventy-five" after "fifty"). It never answers your text — a dictated question stays a question.
 - **It stays faithful to what you said.** Clean-up models like to be helpful, and helpful is wrong here: ours once turned "seventy-five" into "75k". A guard checks the result afterwards — every digit must have been spoken, addresses and URLs must survive unchanged, nothing may be dropped wholesale. If a rule trips, you get the raw transcript instead of a polished lie.
-- **Appending.** Dictate again within a minute of a dictation that only went to the clipboard, and the new text is appended to it. One Ctrl+V brings both. Never after an automatic paste.
+- **Screenshots, from the same tool.** Tap the **right Shift key**: the screen freezes, you drag a rectangle, and the cutout is on the clipboard and saved as a PNG (`data/images`, kept 14 days, "Open the images" in the tray). Press **Enter** instead of dragging for the whole monitor. The freeze happens *before* the selection window opens, so **open drop-down menus and tooltips are in the picture** — the thing the Windows Snipping Tool cannot do, because it takes the focus away from the menu and the menu closes. Configure the key under `snip:` in `config.yaml`.
+- **Appending.** Off by default (`ui.append_within_s: 0`): every dictation stands on its own. Set it to a number of seconds and a dictation that follows a clipboard-only one within that window is appended to it, so one Ctrl+V brings both. Never after an automatic paste.
 - **Translation mode.** Tray menu → "Translate into" (English, German, Spanish, Italian, Russian). Dictate in your language, get the other one out. Off after every start, so normal dictation is never a surprise.
 - **Your own vocabulary, in two tiers.** Terms in `dictionary.txt`, misheard spellings in `aliases.txt`. With `--calibrate` you read your terms out loud once and confirm what Whisper makes of them. Whisper's prompt only holds about 224 tokens and silently drops the tail of a longer list, so everything below the `# === NUR-CLEANUP` marker line goes to the clean-up model only. The app prints the size of each tier at startup.
 - **Pasting that stays out of the way.** If a text field has focus, the text is pasted directly; otherwise it waits on the clipboard until you press Ctrl+V wherever you want it.
@@ -63,9 +64,9 @@ On the first run Whisper downloads its model (once, about 1.5 GB). After that a 
 | Double beep | Text was pasted directly |
 | Single beep | Text is on the clipboard, Ctrl+V pastes it |
 | Low beep | Something failed, details are in the tray note |
-| Release and immediately press again | Start over (short recordings are dropped, long ones are still delivered) |
-| Dictate again within a minute | Appended to the previous text if that one is still on the clipboard |
-| Right-click the tray icon | Toggle mode, translation target, interface language, copy last text, open the log, quit |
+| Release and immediately press again | Start over — the previous recording is dropped, however long it was (`ui.discard_only_if_shorter_than_s` brings back the old length limit) |
+| Tap right Shift | Screenshot: the screen freezes, drag a rectangle (Enter = whole monitor, Esc cancels) |
+| Right-click the tray icon | Toggle mode, translation target, interface language, copy last text, open the log, open the images, quit |
 
 ## Configuration
 
@@ -114,6 +115,8 @@ Es diktiert, räumt auf und übersetzt: **Deutsch und Englisch sind gleichermaß
 *Echte Aufnahme, nichts beschleunigt: Taste halten, sprechen, loslassen — rund fünf Sekunden später steht der bereinigte Text im Editor. [Dieselbe Demo als 50-Sekunden-Video mit Ton](docs/demo.mp4).*
 
 ### Was es kann
+
+- **Bildschirmfotos aus demselben Werkzeug.** Rechte Umschalt-Taste antippen: der Bildschirm friert ein, du ziehst einen Rahmen, das Bild liegt in der Zwischenablage und als PNG im Ordner (`data/images`, 14 Tage). Enter statt Rahmen = ganzer Monitor. Weil VOR der Auswahl eingefroren wird, sind **aufgeklappte Menüs mit auf dem Bild** — genau das, was das Windows-Snipping-Tool nicht kann.
 
 - **Halten und sprechen** (Standard: rechte Strg-Taste) oder **Umschalt-Modus** für lange Reden: einmal drücken an, nochmal drücken aus.
 - **Bis 60 Minuten am Stück.** Die Transkription läuft schon während du sprichst, geschnitten an Sprechpausen. Nach dem Stoppen wartest du rund 5 Sekunden, egal ob du 10 Sekunden oder 20 Minuten geredet hast.

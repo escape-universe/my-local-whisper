@@ -37,6 +37,7 @@ class Tray:
                  toggle_mode: bool = False,
                  on_translate_to: Callable[[str], None] | None = None,
                  on_open_log: Callable[[], None] | None = None,
+                 on_open_images: Callable[[], None] | None = None,
                  on_set_ui_language: Callable[[str], None] | None = None,
                  ui_language: str = "auto"):
         import pystray
@@ -49,6 +50,7 @@ class Tray:
         self._on_copy_last = on_copy_last
         self._on_translate_to = on_translate_to
         self._on_open_log = on_open_log
+        self._on_open_images = on_open_images
         self._on_set_ui_language = on_set_ui_language
         self._ui_language = ui_language      # "auto" oder ein Code aus i18n.LANGUAGES
         self._translate_to = ""      # "" = aus; beim Start immer aus (Entscheidung 08.09.2026)
@@ -82,6 +84,8 @@ class Tray:
             pystray.MenuItem(lambda i: i18n.t("menu_copy_last"), self._copy_last),
             # Verlauf oeffnen (09.09.2026): die letzten Diktate nachlesen, ohne den Ordner zu suchen.
             pystray.MenuItem(lambda i: i18n.t("menu_open_log"), self._open_log),
+            # Bilder oeffnen (10.09.2026): der Schnellspeicher der Ausschnitte, gleiche Logik.
+            pystray.MenuItem(lambda i: i18n.t("menu_open_images"), self._open_images),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(lambda i: i18n.t("menu_quit"), self._quit),
         ]
@@ -106,6 +110,10 @@ class Tray:
     def _open_log(self, icon, item):  # noqa: ARG002
         if self._on_open_log:
             self._on_open_log()
+
+    def _open_images(self, icon, item):  # noqa: ARG002
+        if self._on_open_images:
+            self._on_open_images()
 
     def _make_ui_lang_click(self, setting: str):
         def _click(icon, item):  # noqa: ARG002

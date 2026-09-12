@@ -37,6 +37,7 @@ from wf import i18n
 from wf import inject as inject_mod
 from wf import lang as lang_mod
 from wf import overlay as overlay_mod
+from wf import snip as snip_mod
 from wf import stt as stt_mod
 from wf.hotkey import HoldToTalk
 
@@ -282,7 +283,7 @@ class Pipeline:
         return clipboard_now is not None and clipboard_now == last.get("text")
 
     def _maybe_append(self, text: str) -> tuple[str, bool]:
-        window = float(self._ui.get("append_within_s", 60) or 0)
+        window = float(self._ui.get("append_within_s", 0) or 0)
         last = getattr(self, "_last_delivery", None)
         try:
             clip_now, _ = inject_mod._clip_get()
@@ -409,7 +410,7 @@ class App:
         self._pending: dict[int, float] = {}   # generation -> Aufnahmedauer (fuer die Verwerf-Schwelle)
         ui = cfg.get("ui", {}) or {}
         self.discard_on_new = bool(ui.get("discard_pending_on_new_recording", True))
-        self.discard_max_s = float(ui.get("discard_only_if_shorter_than_s", 30))
+        self.discard_max_s = float(ui.get("discard_only_if_shorter_than_s", 0))
         state = _load_state()
         # Oberflaechensprache (09.09.2026): config.yaml (ui.language) ist die Vorgabe, die
         # Tray-Wahl in state.json sticht sie. "auto" = Windows-Anzeigesprache, damit das
@@ -417,6 +418,24 @@ class App:
         self.ui_language = str(state.get("ui_lang") or ui.get("language") or "auto")
         i18n.set_language(i18n.resolve(self.ui_language))
         self.toggle_mode = bool(state.get("toggle_mode", (cfg.get("hotkey", {}) or {}).get("mode", "hold") == "toggle"))
+        # Bildausschnitt (10.09.2026): eigene Taste, eigener Ordner, eigene Aufbewahrung
+        sn = cfg.get("snip", {}) or {}
+        self.snip_enabled = bool(sn.get("enabled", True))
+        self.snip_key = str(sn.get("key", "shift_r"))
+        self.snip_mode = str(sn.get("mode", "tap"))
+        self.snip_hold_ms = int(sn.get("hold_ms", 450))
+        self.snip_double = bool(sn.get("fullscreen_on_double", False))
+        self.snip_double_ms = int(sn.get("double_tap_ms", 400))
+        self.snip_full_scope = str(sn.get("fullscreen_scope", "monitor"))
+        self.snip_suppress = bool(sn.get("suppress", True))
+        self.snip_keep_days = int(sn.get("keep_days", 14))
+        self.snip_beep = bool(sn.get("beep", True))
+        self.snip_folder = Path(sn.get("folder", "data/bilder"))
+        if not self.snip_folder.is_absolute():
+            self.snip_folder = Path(__file__).resolve().parent / self.snip_folder
+        self._snip_watcher = None
+        self._snip_lock = threading.Lock()   # ein Ausschnitt zur Zeit
+        snip_mod.set_hint(i18n.t("snip_hint"))
         # Streaming-Abschnitte der laufenden Aufnahme
         self._parts: list[str] = []
         self._parts_lock = threading.Lock()
@@ -534,8 +553,13 @@ class App:
         threading.Thread(target=self._process, args=(arr, ctx, gen), daemon=True).start()
 
     def _is_cancelled(self, gen: int) -> bool:
+        """Gilt dieses Diktat noch, oder hat inzwischen ein neues begonnen?
+        discard_max_s <= 0 = keine Laengen-Ausnahme: eine neue Aufnahme verwirft die vorige immer
+        (Entscheidung)."""
         if not self.discard_on_new or gen == self._generation:
             return False
+        if self.discard_max_s <= 0:
+            return True
         return self._pending.get(gen, 0.0) < self.discard_max_s
 
     def _process(self, arr: np.ndarray, ctx: dict, gen: int) -> None:
@@ -545,7 +569,8 @@ class App:
             if st and st.is_alive():
                 st.join(timeout=120)
             with self._parts_lock:
-                prefix = " ".join(self._parts) if gen == self._generation or self._pending.get(gen, 0) >= self.discard_max_s else ""
+                # Abschnitte der laufenden Aufnahme gehoeren nur zu einem Diktat, das noch gilt.
+                prefix = "" if self._is_cancelled(gen) else " ".join(self._parts)
             res = self.pipeline.process_audio(arr, do_inject=True, ctx=ctx,
                                               is_cancelled=lambda: self._is_cancelled(gen),
                                               prefix_cleaned=prefix)
@@ -630,11 +655,110 @@ class App:
             if self.tray:
                 self.tray.notify(grund)
 
+    # ---------------- Bildausschnitt ----------------
+    def do_snip(self) -> str:
+        """Bildschirm einfrieren -> Rahmen aufziehen -> Zwischenablage + PNG.
+        Rueckgabe: '' = Bild gemacht, sonst der Grund (Abbruch/Fehler) — auch fuer den Test.
+
+        Reihenfolge ist wichtig: ERST einfrieren, DANN das eigene Anzeigefeld verstecken und die
+        Auswahl oeffnen. Was beim Tastendruck zu sehen war (aufgeklappte Menues!), ist damit auf
+        dem Bild — das ist der ganze Zweck gegenueber dem Windows-Snipping-Tool."""
+        if not self._snip_lock.acquire(blocking=False):
+            return "laeuft schon"
+        try:
+            bild, ox, oy = snip_mod.grab_screen()
+            self.pipeline.overlay.hide()
+            box = snip_mod.select_region(bild, ox, oy)
+            if not box:
+                self.pipeline.overlay.error(i18n.t("badge_snip_cancelled"), 0.9)
+                return "abgebrochen"
+            ausschnitt = bild.crop(box)
+            in_ablage = snip_mod.to_clipboard(ausschnitt)
+            datei = snip_mod.save_image(ausschnitt, self.snip_folder)
+            groesse = "%d x %d" % ausschnitt.size
+            if in_ablage:
+                self.pipeline.overlay.done(i18n.t("badge_snip_ready"))
+                if self.snip_beep:
+                    _beep("ok")
+            else:
+                self.pipeline.overlay.error(i18n.t("badge_snip_failed"), 1.5)
+            print(f"[snip] {groesse} -> Zwischenablage={in_ablage}, Datei={datei.name}")
+            if self.tray:
+                self.tray.notify(i18n.t("note_snip_saved", size=groesse, file=datei.name))
+            return "" if in_ablage else "Clipboard locked"
+        except Exception as e:  # noqa: BLE001
+            print(f"[snip] Fehler: {e}")
+            self.pipeline.overlay.error(i18n.t("badge_snip_failed"), 1.5)
+            if self.tray:
+                self.tray.notify(i18n.t("note_error", error=e))
+            return str(e)
+        finally:
+            self._snip_lock.release()
+
+    def do_fullscreen(self) -> str:
+        """Ganzer Bildschirm, ohne Rahmen ziehen (zweimal kurz tippen, 10.09.2026).
+        Gedacht fuer „schau dir das mal an": ein Griff, das Bild liegt im Ordner und in der
+        Zwischenablage. Rueckgabe: '' = Bild gemacht, sonst der Grund."""
+        if not self._snip_lock.acquire(blocking=False):
+            return "laeuft schon"
+        try:
+            self.pipeline.overlay.hide()
+            time.sleep(0.12)          # das eigene Anzeigefeld soll nicht mit aufs Bild
+            bild, ox, oy = snip_mod.grab_screen()
+            wo = "alle Monitore"
+            if self.snip_full_scope != "alle":
+                # nur der Monitor unter der Maus: halb so grosses Bild, halb so viel Kontext
+                r = snip_mod.monitor_rect()
+                if r:
+                    bild = bild.crop((r[0] - ox, r[1] - oy, r[2] - ox, r[3] - oy))
+                    wo = "Monitor unter der Maus"
+            in_ablage = snip_mod.to_clipboard(bild)
+            datei = snip_mod.save_image(bild, self.snip_folder)
+            groesse = "%d x %d" % bild.size
+            self.pipeline.overlay.done(i18n.t("badge_snip_full"))
+            if self.snip_beep:
+                _beep("ok")
+            print(f"[snip] ganzer Bildschirm ({wo}) {groesse} -> Zwischenablage={in_ablage}, Datei={datei.name}")
+            if self.tray:
+                self.tray.notify(i18n.t("note_snip_full", size=groesse, file=datei.name))
+            return "" if in_ablage else "Clipboard locked"
+        except Exception as e:  # noqa: BLE001
+            print(f"[snip] Fehler (ganzer Bildschirm): {e}")
+            self.pipeline.overlay.error(i18n.t("badge_snip_failed"), 1.5)
+            return str(e)
+        finally:
+            self._snip_lock.release()
+
+    def _snip_armed(self) -> None:
+        """Haltezeit erreicht (Betriebsart „hold"): am Mauszeiger anzeigen, dass Loslassen jetzt
+        den Ausschnitt oeffnet. Ohne diese Rueckmeldung haelt man die Taste ins Blaue."""
+        self.pipeline.overlay.notice(i18n.t("badge_snip_arm"), 3.0)
+
+    def open_images(self) -> str:
+        """Bilder-Ordner im Explorer oeffnen (Tray -> "Bilder oeffnen").
+        Rueckgabe: '' = geoeffnet, sonst der Grund."""
+        if not self.snip_folder.exists() or not any(self.snip_folder.glob("*.png")):
+            return i18n.t("note_no_images_yet", file=self.snip_folder.name)
+        try:
+            import os
+            os.startfile(str(self.snip_folder))  # noqa: S606 — Explorer
+            return ""
+        except OSError as e:
+            return i18n.t("note_images_open_failed", error=e)
+
+    def _open_images(self) -> None:
+        grund = self.open_images()
+        if grund:
+            print(f"[snip] {grund}")
+            if self.tray:
+                self.tray.notify(grund)
+
     def _set_ui_language(self, setting: str) -> None:
         """Tray -> Sprache. setting = 'auto' oder ein Code aus i18n.LANGUAGES."""
         self.ui_language = setting
         code = i18n.set_language(i18n.resolve(setting))
         st = _load_state(); st["ui_lang"] = setting; _save_state(st)
+        snip_mod.set_hint(i18n.t("snip_hint"))
         print(f"[app] UI-Sprache: {code} (Einstellung: {setting})")
         if self.tray:
             self.tray.notify(i18n.t("note_language_set", lang=i18n.label(code)))
@@ -656,6 +780,19 @@ class App:
         key = self.cfg.get("hotkey", {}).get("key", "ctrl_r")
         hk = HoldToTalk(key, self._on_press, self._on_release)
         hk.start()
+        if self.snip_enabled:
+            weg = snip_mod.cleanup_old(self.snip_folder, self.snip_keep_days)
+            self._snip_watcher = snip_mod.KeyWatcher(
+                self.snip_key, self.do_snip, self.snip_suppress,
+                mode=self.snip_mode, hold_ms=self.snip_hold_ms, on_arm=self._snip_armed,
+                on_double=(self.do_fullscreen if self.snip_double else None),
+                double_tap_ms=self.snip_double_ms)
+            self._snip_watcher.start()
+            print(f"[snip] Bildausschnitt aktiv: {snip_mod.key_label(self.snip_key)} -> Rahmen aufziehen"
+                  + (", 2x tippen -> ganzer Bildschirm. " if self.snip_double
+                     else " (Enter im Auswahl-Fenster = ganzer Bildschirm). ")
+                  + f"Ordner {self.snip_folder.name}, Aufbewahrung {self.snip_keep_days} Tage"
+                  + (f", {weg} alte geloescht" if weg else ""))
         mode = self.pipeline.method
         hint = {"hybrid": "Textfeld mit Fokus -> direkt eingefuegt, sonst Zwischenablage (Strg+V).",
                 "clipboard_only": "Text in die Zwischenablage (Strg+V).",
@@ -669,12 +806,15 @@ class App:
             self.tray = Tray(self._toggle, self._quit, on_toggle_mode=self._set_toggle_mode,
                              on_copy_last=self._copy_last, toggle_mode=self.toggle_mode,
                              on_translate_to=self._set_translate_to, on_open_log=self._open_log,
-                             on_set_ui_language=self._set_ui_language, ui_language=self.ui_language)
+                             on_set_ui_language=self._set_ui_language, ui_language=self.ui_language,
+                             on_open_images=self._open_images)
             self.pipeline.tray = self.tray
             self.tray.set_state("idle")
             # pystray.run() blockiert im Main-Thread; Hotkey-Listener laeuft eh separat
             self.tray.run()
             hk.stop()
+            if self._snip_watcher:
+                self._snip_watcher.stop()
         else:
             try:
                 while not self._stop.is_set():
@@ -682,6 +822,8 @@ class App:
             except KeyboardInterrupt:
                 pass
             hk.stop()
+            if self._snip_watcher:
+                self._snip_watcher.stop()
         self._recorder.close()
         self.pipeline.cleaner.unload()
         print("[app] stopped (models unloaded from VRAM).")
@@ -742,6 +884,8 @@ def main() -> int:
     ap.add_argument("--clean-text", metavar="TEXT")
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--calibrate", action="store_true", help="Begriffe vorlesen, Hoer-Fehler als Alias uebernehmen")
+    ap.add_argument("--nur", default="", metavar="ABSCHNITT",
+                    help="nur einen Abschnitt aus dictionary.txt kalibrieren, z.B. --nur englisch")
     ap.add_argument("--no-tray", action="store_true")
     args = ap.parse_args()
 
@@ -760,7 +904,7 @@ def main() -> int:
         return cmd_clean_text(cfg, args.clean_text)
     if args.calibrate:
         from calibrate import run_calibration
-        return run_calibration(cfg)
+        return run_calibration(cfg, args.nur)
 
     App(cfg, use_tray=not args.no_tray).run()
     return 0

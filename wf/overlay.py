@@ -71,6 +71,14 @@ class Overlay:
         with self._lock:
             self._state, self._text, self._pct, self._until = "done", text, 100.0, time.time() + seconds
 
+    def notice(self, text: str, seconds: float = 3.0) -> None:
+        """Neutrale Ansage (blau, kein Fehler) — z.B. „loslassen fuer den Ausschnitt", waehrend
+        die Ausloese-Taste gehalten wird. Verdraengt keine laufende Verarbeitung."""
+        with self._lock:
+            if self._state == "processing":
+                return
+            self._state, self._text, self._until = "notice", text, time.time() + seconds
+
     def error(self, text: str = "", seconds: float = 2.0) -> None:
         text = text or i18n.t("badge_error")
         with self._lock:
@@ -122,7 +130,7 @@ class Overlay:
             with self._lock:
                 state, text, t0, until = self._state, self._text, self._t0, self._until
                 pct = self._elapsed_pct() if state == "processing" else self._pct
-            if state in ("done", "error") and time.time() > until:
+            if state in ("done", "error", "notice") and time.time() > until:
                 self._state = state = "hidden"
             if state == "hidden":
                 if visible:
@@ -159,6 +167,10 @@ class Overlay:
             elif state == "done":
                 cv.create_oval(cx - r, cy - r, cx + r, cy + r, fill="#3cb44b", outline="")
                 cv.create_line(cx - 5, cy, cx - 1, cy + 4, cx + 6, cy - 5, fill="white", width=2)
+                label = text
+            elif state == "notice":
+                cv.create_oval(cx - r, cy - r, cx + r, cy + r, fill="#4da3ff", outline="")
+                cv.create_rectangle(cx - 4, cy - 3, cx + 4, cy + 4, outline="white", width=2)
                 label = text
             else:  # error
                 cv.create_oval(cx - r, cy - r, cx + r, cy + r, fill="#e03c3c", outline="")

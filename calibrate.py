@@ -79,10 +79,39 @@ def _append_alias(path: Path, target: str, variant: str) -> bool:
     return True
 
 
-def run_calibration(cfg: dict) -> int:
+def section_terms(cfg: dict, name: str) -> list[str]:
+    """Begriffe aus EINEM Abschnitt von dictionary.txt. Abschnitte sind die Kommentarzeilen
+    `# === NAME ===`; `name` matcht als Teilstring, Gross/Klein egal (z.B. "englisch").
+    Leere Liste, wenn kein Abschnitt passt."""
+    pfad = ROOT / cfg.get("dictionary_path", "dictionary.txt")
+    if not pfad.exists():
+        return []
+    treffer: list[str] = []
+    drin = False
+    for zeile in pfad.read_text(encoding="utf-8").splitlines():
+        z = zeile.strip()
+        if z.startswith("#"):
+            if "===" in z:
+                drin = name.strip().lower() in z.lower()
+            continue
+        if drin and z:
+            treffer.append(z)
+    return treffer
+
+
+def run_calibration(cfg: dict, nur: str = "") -> int:
     base = config_mod.load_dictionary(cfg)
     first, _full = config_mod.load_employee_names(cfg)
     terms = [t for t in first if t not in base] + base
+    if nur:
+        # Nur einen Abschnitt ueben (z.B. die englischen Begriffe) — 6 Runden statt 30.
+        gewaehlt = section_terms(cfg, nur)
+        if not gewaehlt:
+            print(f"[calibrate] Kein Abschnitt in dictionary.txt passt zu {nur!r}. "
+                  f"Abschnitte sind die Zeilen '# === NAME ==='.")
+            return 2
+        terms = gewaehlt
+        print(f"[calibrate] Nur Abschnitt {nur!r}: {len(terms)} Begriffe")
     alias_path = config_mod.load_aliases_path(cfg)
     fixer = aliases_mod.AliasFixer(aliases_mod.load_aliases(alias_path))
     seed = config_mod.dictionary_prompt_seed(base + [n for n in first if n not in base])
