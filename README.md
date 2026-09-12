@@ -6,6 +6,11 @@ It dictates, it cleans up, and it translates: **English and German are equally a
 
 *Deutsche Fassung weiter unten ↓*
 
+> *"ears, eyes, mouth should run local and quick on your device. for a little more souverän data and
+> universal approach instead of using extern software not adapted to yourself. The main point is
+> Increasing input and handling speed with agents as our human outputs with fingers, voice, eyes
+> needs to be as fast as possible"* — the author, dictated with this tool.
+>
 > **Read this first: [the idea behind it](docs/IDEA.md).** The software here is one implementation,
 > for one person, on Windows, in 2026 — it will age. The idea will not: **ears, eyes and mouth should
 > run locally and instantly on your own device**, so that the channel between you and your agent stops
@@ -113,6 +118,12 @@ Built at [Escape Universe](https://escapeuniverse.de), Nienburg / Hannover / Lei
 
 # my-local-whisper (deutsch)
 
+> *„Ohren, Augen und Mund sollen lokal und schnell auf dem eigenen Gerät laufen — für etwas mehr
+> Datenhoheit und einen universellen Ansatz statt fremder Software, die nicht auf dich zugeschnitten
+> ist. Der eigentliche Punkt: Eingabe- und Verarbeitungsgeschwindigkeit erhöhen, denn Finger, Stimme
+> und Augen sind unsere menschliche Ausgabeseite und müssen so schnell wie möglich sein."*
+> — der Autor ([Originalwortlaut](docs/IDEA.md))
+>
 > **Zuerst lesen: [die Idee dahinter](docs/IDEA.md).** Die Software ist eine Umsetzung von vielen und
 > altert; die Idee nicht: **Ohren, Augen und Mund sollen lokal und sofort auf dem eigenen Gerät
 > laufen**, damit der Weg zwischen dir und deinem Agenten nicht mehr der Engpass ist. Nachbauen

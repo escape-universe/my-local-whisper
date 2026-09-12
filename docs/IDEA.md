@@ -5,6 +5,25 @@ person, on Windows, in September 2026. It will age. The idea underneath does not
 
 ---
 
+## In the author's words
+
+> "ears, eyes, mouth should run local and quick on your device. for a little more souverän data and
+> universal approach instead of using extern software not adapted to yourself. The main point is
+> Increasing input and handling speed with agents as our human outputs with fingers, voice, eyes
+> needs to be as fast as possible"
+
+*Unedited, and dictated with the tool it describes.* Four claims sit in those three sentences, and
+everything below is only their elaboration:
+
+1. **Ears, eyes and mouth belong on your device** — the three human channels, not three products.
+2. **Local and quick, in that order** — sovereign data first, and fast enough that you stop noticing it.
+3. **Universal instead of adapted-to-nobody** — one layer that works everywhere beats external
+   software that was never shaped around you.
+4. **The point is speed of input and handling** — fingers, voice and eyes are the human output side,
+   and that side is now the limit. Everything that widens it pays for itself every single day.
+
+---
+
 ## The bottleneck moved
 
 Agents got fast. The channel between a human and an agent did not.
@@ -111,6 +130,20 @@ it fits *your* hands, *your* keyboard, *your* words, and it changes the same day
 ---
 
 ## Deutsche Fassung
+
+### In den Worten des Autors
+
+> „ears, eyes, mouth should run local and quick on your device. for a little more souverän data and
+> universal approach instead of using extern software not adapted to yourself. The main point is
+> Increasing input and handling speed with agents as our human outputs with fingers, voice, eyes
+> needs to be as fast as possible"
+
+*Unverändert, diktiert mit genau dem Werkzeug, das es beschreibt.* Sinngemäß: **Ohren, Augen und
+Mund gehören auf das eigene Gerät** — lokal und schnell, in dieser Reihenfolge: erst die
+Datenhoheit, dann das Tempo. **Universell statt fremd**: eine Schicht, die überall funktioniert,
+schlägt zugekaufte Software, die nie auf dich zugeschnitten war. Und der eigentliche Punkt:
+**Eingabe- und Verarbeitungsgeschwindigkeit erhöhen** — Finger, Stimme und Augen sind die
+menschliche Ausgabeseite, und die ist jetzt die Grenze.
 
 **Der Engpass ist nicht mehr das Modell, sondern der Weg vom Menschen zur Maschine.** Du denkst
 schneller, als du tippst. Du siehst einen ganzen Bildschirm auf einmal und beschreibst ihn dann zwei
