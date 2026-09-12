@@ -6,10 +6,10 @@ It dictates, it cleans up, and it translates: **English and German are equally a
 
 *Deutsche Fassung weiter unten ↓*
 
-> *"ears, eyes, mouth should run local and quick on your device. for a little more souverän data and
-> universal approach instead of using extern software not adapted to yourself. The main point is
-> Increasing input and handling speed with agents as our human outputs with fingers, voice, eyes
-> needs to be as fast as possible"* — the author, dictated with this tool.
+> **Ears, eyes and mouth should run locally and fast on your own device** — for data that stays
+> yours and an approach that works everywhere, instead of external software that was never adapted
+> to you. The point is to raise the speed of input and handling when working with agents: our human
+> output — fingers, voice, eyes — has to be as fast as it possibly can.
 >
 > **Read this first: [the idea behind it](docs/IDEA.md).** The software here is one implementation,
 > for one person, on Windows, in 2026 — it will age. The idea will not: **ears, eyes and mouth should
@@ -118,11 +118,11 @@ Built at [Escape Universe](https://escapeuniverse.de), Nienburg / Hannover / Lei
 
 # my-local-whisper (deutsch)
 
-> *„Ohren, Augen und Mund sollen lokal und schnell auf dem eigenen Gerät laufen — für etwas mehr
-> Datenhoheit und einen universellen Ansatz statt fremder Software, die nicht auf dich zugeschnitten
-> ist. Der eigentliche Punkt: Eingabe- und Verarbeitungsgeschwindigkeit erhöhen, denn Finger, Stimme
-> und Augen sind unsere menschliche Ausgabeseite und müssen so schnell wie möglich sein."*
-> — der Autor ([Originalwortlaut](docs/IDEA.md))
+> **Ohren, Augen und Mund sollen lokal und schnell auf dem eigenen Gerät laufen** — für Daten, die
+> bei dir bleiben, und einen Ansatz, der überall funktioniert, statt fremder Software, die nie auf
+> dich zugeschnitten war. Der Punkt ist, Eingabe und Verarbeitung im Arbeiten mit Agenten schneller
+> zu machen: Finger, Stimme und Augen sind unsere menschliche Ausgabeseite, und die muss so schnell
+> sein wie irgend möglich.
 >
 > **Zuerst lesen: [die Idee dahinter](docs/IDEA.md).** Die Software ist eine Umsetzung von vielen und
 > altert; die Idee nicht: **Ohren, Augen und Mund sollen lokal und sofort auf dem eigenen Gerät

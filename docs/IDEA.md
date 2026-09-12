@@ -5,15 +5,14 @@ person, on Windows, in September 2026. It will age. The idea underneath does not
 
 ---
 
-## In the author's words
+## The idea in one paragraph
 
-> "ears, eyes, mouth should run local and quick on your device. for a little more souverän data and
-> universal approach instead of using extern software not adapted to yourself. The main point is
-> Increasing input and handling speed with agents as our human outputs with fingers, voice, eyes
-> needs to be as fast as possible"
+> **Ears, eyes and mouth should run locally and fast on your own device** — for data that stays
+> yours and an approach that works everywhere, instead of external software that was never adapted
+> to you. The point is to raise the speed of input and handling when working with agents: our human
+> output — fingers, voice, eyes — has to be as fast as it possibly can.
 
-*Unedited, and dictated with the tool it describes.* Four claims sit in those three sentences, and
-everything below is only their elaboration:
+That is the whole thing; everything below is only its elaboration. Four claims sit in it:
 
 1. **Ears, eyes and mouth belong on your device** — the three human channels, not three products.
 2. **Local and quick, in that order** — sovereign data first, and fast enough that you stop noticing it.
@@ -131,19 +130,15 @@ it fits *your* hands, *your* keyboard, *your* words, and it changes the same day
 
 ## Deutsche Fassung
 
-### In den Worten des Autors
+### Die Idee in einem Absatz
 
-> „ears, eyes, mouth should run local and quick on your device. for a little more souverän data and
-> universal approach instead of using extern software not adapted to yourself. The main point is
-> Increasing input and handling speed with agents as our human outputs with fingers, voice, eyes
-> needs to be as fast as possible"
+> **Ohren, Augen und Mund sollen lokal und schnell auf dem eigenen Gerät laufen** — für Daten, die
+> bei dir bleiben, und einen Ansatz, der überall funktioniert, statt fremder Software, die nie auf
+> dich zugeschnitten war. Der Punkt ist, Eingabe und Verarbeitung im Arbeiten mit Agenten schneller
+> zu machen: Finger, Stimme und Augen sind unsere menschliche Ausgabeseite, und die muss so schnell
+> sein wie irgend möglich.
 
-*Unverändert, diktiert mit genau dem Werkzeug, das es beschreibt.* Sinngemäß: **Ohren, Augen und
-Mund gehören auf das eigene Gerät** — lokal und schnell, in dieser Reihenfolge: erst die
-Datenhoheit, dann das Tempo. **Universell statt fremd**: eine Schicht, die überall funktioniert,
-schlägt zugekaufte Software, die nie auf dich zugeschnitten war. Und der eigentliche Punkt:
-**Eingabe- und Verarbeitungsgeschwindigkeit erhöhen** — Finger, Stimme und Augen sind die
-menschliche Ausgabeseite, und die ist jetzt die Grenze.
+Mehr ist es nicht; alles Weitere ist nur die Ausführung davon.
 
 **Der Engpass ist nicht mehr das Modell, sondern der Weg vom Menschen zur Maschine.** Du denkst
 schneller, als du tippst. Du siehst einen ganzen Bildschirm auf einmal und beschreibst ihn dann zwei
