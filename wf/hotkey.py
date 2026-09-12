@@ -89,6 +89,10 @@ class HoldToTalk:
         self._on_release = on_release
         self._down = False
         self._last_event = 0.0
+        # Wann die Taste zuletzt losgelassen wurde (Listener-Thread) — damit die App messen kann,
+        # wie lange der Weg Taste -> Stopp wirklich dauert (Auftrag „reaktiver", 12.09.2026).
+        self.last_release_at = 0.0
+        self.last_press_at = 0.0
         self._listener: keyboard.Listener | None = None
         # Callbacks laufen im Worker, nicht im pynput-Thread (siehe Modul-Kopf, Punkt 2).
         self._jobs: queue.Queue = queue.Queue()
@@ -121,12 +125,14 @@ class HoldToTalk:
             return
         self._down = True
         self._last_event = time.time()
+        self.last_press_at = self._last_event
         self._jobs.put("press")
 
     def _release(self, key):
         if self._matches(key) and self._down:
             self._down = False
             self._last_event = time.time()
+            self.last_release_at = self._last_event
             self._jobs.put("release")
 
     def _run_worker(self) -> None:

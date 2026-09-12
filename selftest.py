@@ -578,6 +578,147 @@ def test_long_dictation_parts() -> None:
 
 
 
+def test_reaktiv_nach_loslassen() -> None:
+    """12.09.2026 (der Nutzer: „je laenger ich spreche, desto laenger nimmt es danach noch auf"):
+    (1) kleine Abschnitte, damit nach dem Loslassen wenig zu rechnen bleibt; (2) die Prognose
+    zaehlt den Abschnitt mit, der beim Loslassen in Arbeit ist; (3) die Endverarbeitung holt die
+    Streamer-Abschnitte erst beim Zusammensetzen ab (Funktion statt Text), nicht vor der STT;
+    (4) die fensterlose Instanz schreibt ein Protokoll mit Uhrzeit."""
+    import io as _io, os as _os, time as _time
+    from pathlib import Path as _Path
+    import whisperflow as W
+    from wf import config as c
+    from wf import overlay as ov
+
+    cfg = c.load_config()
+    check("reaktiv: Abschnitte hoechstens 15 s (audio.chunk_seconds)",
+          float(cfg["audio"]["chunk_seconds"]) <= 15, str(cfg["audio"]["chunk_seconds"]))
+    nur_rest = ov.estimate_seconds(5.0)
+    mit_abschnitt = ov.estimate_seconds(5.0, 12.0)
+    # Der laufende Abschnitt kostet dasselbe wie der Rest — gegen die Summe pruefen statt gegen
+    # einen festen Abstand, sonst haengt der Test an den Koeffizienten (13.09.2026 nachgezogen).
+    check("reaktiv: Prognose zaehlt den laufenden Abschnitt wie den Rest",
+          abs(mit_abschnitt - ov.estimate_seconds(17.0)) < 0.05 and mit_abschnitt > nur_rest,
+          f"{nur_rest:.2f} s (nur Rest) -> {mit_abschnitt:.2f} s (mit Abschnitt), 17 s am Stueck: {ov.estimate_seconds(17.0):.2f} s")
+
+    # process_audio: der Prefix darf eine Funktion sein und wird erst beim Zusammensetzen gerufen
+    P = W.Pipeline.__new__(W.Pipeline)
+    P.overlay = ov.Overlay(enabled=False)
+    P.last_language = "de"
+    P.transcriber = type("T", (), {"language": "de"})()
+    P.aliases = type("A", (), {"fix": staticmethod(lambda t: (t, []))})()
+    P.translate_to = ""
+    P.tray = None
+    P.cfg = cfg
+    reihenfolge: list[str] = []
+    P.transcribe = lambda arr: (reihenfolge.append("stt"), "rest text")[1]
+    # clean() liefert (Text, wurde_bereinigt) — wie der echte Cleaner
+    P.cleaner = type("C", (), {"clean": staticmethod(lambda t, cat, lang: (reihenfolge.append("cleanup"), (t.upper(), True))[1])})()
+
+    def prefix():
+        reihenfolge.append("prefix")
+        return "ABSCHNITT EINS."
+
+    import numpy as _np
+    res = P.process_audio(_np.zeros(16000, dtype=_np.float32), do_inject=False,
+                          ctx={"category": "default", "process": "x"}, prefix_cleaned=prefix)
+    check("reaktiv: Streamer-Abschnitte werden NACH der STT des Rests abgeholt",
+          reihenfolge == ["stt", "cleanup", "prefix"], str(reihenfolge))
+    check("reaktiv: Ergebnis = Abschnitte + Rest", res.get("cleaned") == "ABSCHNITT EINS. REST TEXT", str(res.get("cleaned")))
+    reihenfolge.clear()
+    P.transcribe = lambda arr: (reihenfolge.append("stt"), "")[1]
+    res2 = P.process_audio(_np.zeros(16000, dtype=_np.float32), do_inject=False,
+                           ctx={"category": "default", "process": "x"}, prefix_cleaned=prefix)
+    check("reaktiv: ohne Rest werden die Abschnitte trotzdem geliefert",
+          res2.get("cleaned") == "ABSCHNITT EINS." and "prefix" in reihenfolge, str(res2.get("cleaned")))
+    check("reaktiv: Text-Prefix funktioniert weiter wie bisher",
+          P.process_audio(_np.zeros(16000, dtype=_np.float32), do_inject=False,
+                          ctx={"category": "default", "process": "x"},
+                          prefix_cleaned="ALT.").get("cleaned") == "ALT.")
+
+    # Protokoll mit Uhrzeit
+    buf = _io.StringIO()
+    st = W._Stamped(buf)
+    st.write("erste Zeile\nzweite")
+    st.write(" Zeile weiter\n")
+    zeilen = buf.getvalue().splitlines()
+    check("protokoll: jede Zeile bekommt eine Uhrzeit, Teilzeilen nicht doppelt",
+          len(zeilen) == 2 and zeilen[0][8] == " " and zeilen[0].endswith("erste Zeile")
+          and zeilen[1].endswith("zweite Zeile weiter") and zeilen[1].count(":") == 2, str(zeilen))
+    tmp = _Path(_os.environ.get("TEMP", ".")) / "wf_applog_selftest" / "app.log"
+    if tmp.exists():
+        tmp.unlink()
+    alt_out, alt_err = W.sys.stdout, W.sys.stderr
+    try:
+        W._attach_file_log(tmp)
+        print("[test] hallo Protokoll")
+    finally:
+        W.sys.stdout, W.sys.stderr = alt_out, alt_err
+    inhalt = tmp.read_text(encoding="utf-8") if tmp.exists() else ""
+    # Gross/klein und Wortwahl der Startzeile haengen an der Sprache (public ist englisch) —
+    # auf die Marke pruefen, nicht auf den Wortlaut.
+    check("protokoll: data/app.log entsteht und traegt Start-Zeile + Ausgabe",
+          "[app] ---" in inhalt and "[test] hallo Protokoll" in inhalt, inhalt[-80:])
+    # Deckel: bei zu grosser Datei bleibt die juengere Haelfte
+    tmp.write_text("x" * 3_000_000 + "\nENDE\n", encoding="utf-8")
+    try:
+        W._attach_file_log(tmp, max_bytes=1_000_000)
+    finally:
+        W.sys.stdout, W.sys.stderr = alt_out, alt_err
+    check("protokoll: zu grosse Datei wird auf die juengere Haelfte gekappt",
+          tmp.stat().st_size < 1_100_000 and "ENDE" in tmp.read_text(encoding="utf-8"), f"{tmp.stat().st_size} Bytes")
+
+
+def test_aufnahme_aus_sichtbar() -> None:
+    """13.09.2026 (der Nutzer: „dass wenigstens diese Aufnahmesymbolik weg ist, dass ich weiss, jetzt
+    wird nicht mehr aufgenommen"). Gemessen war die Aufnahme sofort aus (Stopp->Ring 1 ms) — es
+    fehlte die AUSSAGE. Geprueft wird deshalb, dass das Feld es auch sagt, nicht nur, dass der
+    Zustand wechselt."""
+    import time as _time
+    from wf import i18n as _i18n
+    from wf import overlay as ov
+    from wf import config as c
+
+    vorher = _i18n.current()
+    try:
+        for code in ("de", "en", "ru", "es", "it"):
+            _i18n.set_language(code)
+            stopp = _i18n.t("badge_stopped")
+            erkennen = _i18n.t("badge_listening")
+            check(f"aufnahme-aus: {code} hat einen Stopp-Text", len(stopp) > 3 and stopp != "badge_stopped", stopp)
+            check(f"aufnahme-aus: {code} sagt waehrend der Erkennung NICHT mehr „hoere zu\"",
+                  erkennen.lower() not in ("listening", "listening", "слушаю", "escuchando", "ascolto"), erkennen)
+        _i18n.set_language("de")
+        check("aufnahme-aus: der Aufnahme-Text kommt aus der Oberflaechensprache (war fest deutsch)",
+              _i18n.t("badge_recording") == "Aufnahme")
+        _i18n.set_language("en")
+        check("aufnahme-aus: englische Oberflaeche sagt nicht mehr „Aufnahme\"",
+              _i18n.t("badge_recording") == "recording")
+    finally:
+        _i18n.set_language(vorher)
+
+    o = ov.Overlay(enabled=False)
+    o.processing(2.0)
+    check("aufnahme-aus: direkt nach dem Loslassen laeuft die Stopp-Anzeige",
+          o._stop_until > _time.time(), f"noch {o._stop_until - _time.time():.2f} s")
+    check("aufnahme-aus: die Stopp-Anzeige dauert hoechstens eine Sekunde",
+          0.2 <= ov.Overlay.STOP_HINT_S <= 1.0, str(ov.Overlay.STOP_HINT_S))
+    o.recording()
+    check("aufnahme-aus: eine neue Aufnahme zeigt keine Stopp-Anzeige", o._state == "recording")
+
+    ui = (c.load_config().get("ui") or {})
+    check("aufnahme-aus: Ton beim Loslassen ist an (ui.beep_on_stop)", bool(ui.get("beep_on_stop")) is True,
+          str(ui.get("beep_on_stop")))
+    import whisperflow as W
+    check("aufnahme-aus: die App liest den Schalter", "beep_on_stop" in W.App.__init__.__code__.co_consts)
+
+    # Schaetzung: an echten Diktaten gemessen (data/app.log, 13.09.2026)
+    for audio_s, gemessen in ((3.2, 1.10), (6.6, 0.88), (12.0, 2.02)):
+        schaetzung = ov.estimate_seconds(audio_s)
+        check(f"schaetzung: {audio_s:.1f} s Audio -> {schaetzung:.2f} s liegt nah an gemessenen {gemessen:.2f} s",
+              abs(schaetzung - gemessen) < 0.8, f"Abweichung {schaetzung - gemessen:+.2f} s")
+
+
 def test_snip_bausteine() -> None:
     """10.09.2026 — Bildausschnitt ohne Oberflaeche: Einfrieren, Ablegen, Aufraeumen, Taste."""
     import os as _os, time as _time
@@ -914,6 +1055,8 @@ def run_selftests() -> int:
     test_snip_bausteine()         # fokus-frei
     test_snip_halten()            # fokus-frei
     test_neue_bilder_zubringer()  # fokus-frei
+    test_reaktiv_nach_loslassen()  # fokus-frei
+    test_aufnahme_aus_sichtbar()   # fokus-frei
     # Die Auswahl-Fenster-Tests laufen VOR test_injection: das legt im selben Prozess ein
     # Tk-Fenster im Hauptthread an, und ein zweites Tk in einem Nebenthread kommt danach
     # nicht mehr hoch (Tcl-Eigenheit, gemessen 11.09.2026 — die App selbst ist davon nicht

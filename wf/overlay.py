@@ -35,6 +35,7 @@ class Overlay:
         self._t0 = 0.0
         self._eta = 1.0
         self._until = 0.0
+        self._stop_until = 0.0      # bis dahin zeigt "processing" das Stopp-Zeichen statt des Rings
         self._thread: threading.Thread | None = None
         self._ready = threading.Event()
 
@@ -47,13 +48,22 @@ class Overlay:
         self._ready.wait(3)
 
     def recording(self) -> None:
+        self._note("recording")
         with self._lock:
             self._state, self._t0, self._text = "recording", time.time(), ""
 
+    #: So lange zeigt das Feld direkt nach dem Loslassen „Aufnahme aus" statt des Fortschrittsrings.
+    #: Kurz genug, dass es den Fortschritt nicht verdeckt, lang genug, dass man es im Augenwinkel sieht.
+    STOP_HINT_S = 0.6
+
     def processing(self, eta_s: float, text: str = "") -> None:
         text = text or i18n.t("badge_listening")
+        self._note("processing", "eta %.1f s" % eta_s)
         with self._lock:
             self._state, self._t0, self._eta, self._text, self._pct = "processing", time.time(), max(0.3, eta_s), text, 0.0
+            # Der Moment des Loslassens bekommt eine eigene Aussage (13.09.2026): erst „Aufnahme aus",
+            # dann der Ring. Ohne das war der Wechsel aus dem Augenwinkel nicht erkennbar.
+            self._stop_until = time.time() + self.STOP_HINT_S
 
     def phase(self, text: str, eta_left_s: float | None = None) -> None:
         """Text unter dem Ring aendern; optional die Restschaetzung nachziehen."""
@@ -68,6 +78,7 @@ class Overlay:
 
     def done(self, text: str = "", seconds: float = 1.3) -> None:
         text = text or i18n.t("badge_ready")
+        self._note("done", text)
         with self._lock:
             self._state, self._text, self._pct, self._until = "done", text, 100.0, time.time() + seconds
 
@@ -81,10 +92,12 @@ class Overlay:
 
     def error(self, text: str = "", seconds: float = 2.0) -> None:
         text = text or i18n.t("badge_error")
+        self._note("error", text)
         with self._lock:
             self._state, self._text, self._until = "error", text, time.time() + seconds
 
     def hide(self) -> None:
+        self._note("hidden")
         with self._lock:
             self._state = "hidden"
 
@@ -93,6 +106,12 @@ class Overlay:
         el = time.time() - self._t0
         # weiche Kurve: schnell am Anfang, kriecht auf 95 zu
         return min(95.0, 100.0 * (1 - math.exp(-2.2 * el / self._eta)))
+
+    def _note(self, neu_state: str, text: str = "") -> None:
+        """Jeden Zustandswechsel mit Zeitstempel protokollieren (landet in data/app.log).
+        Ohne das war nicht belegbar, WANN das Aufnahme-Symbol verschwindet — genau die Frage
+        vom 13.09.2026 („dass wenigstens die Aufnahmesymbolik weg ist")."""
+        print("[badge] %-10s %s" % (neu_state, text), flush=True)
 
     def _run(self) -> None:
         try:
@@ -129,6 +148,7 @@ class Overlay:
             nonlocal visible
             with self._lock:
                 state, text, t0, until = self._state, self._text, self._t0, self._until
+                stop_until = self._stop_until
                 pct = self._elapsed_pct() if state == "processing" else self._pct
             if state in ("done", "error", "notice") and time.time() > until:
                 self._state = state = "hidden"
@@ -158,7 +178,12 @@ class Overlay:
                 blink = int(time.time() * 2) % 2 == 0
                 cv.create_oval(cx - r, cy - r, cx + r, cy + r, fill="#e03c3c" if blink else "#7a2020", outline="")
                 s = int(time.time() - t0)
-                label = f"Aufnahme {s // 60}:{s % 60:02d}"
+                label = f"{i18n.t('badge_recording')} {s // 60}:{s % 60:02d}"
+            elif state == "processing" and time.time() < stop_until:
+                # Die ersten Zehntel nach dem Loslassen: grosses graues Quadrat = „aus", kein Rot,
+                # kein Ring. Das ist die Antwort auf „damit ich weiss, es nimmt nicht mehr auf".
+                cv.create_rectangle(cx - 6, cy - 6, cx + 6, cy + 6, fill="#9a9a9a", outline="")
+                label = i18n.t("badge_stopped")
             elif state == "processing":
                 cv.create_oval(cx - r, cy - r, cx + r, cy + r, outline="#555555", width=3)
                 cv.create_arc(cx - r, cy - r, cx + r, cy + r, start=90, extent=-360 * pct / 100,
@@ -184,6 +209,12 @@ class Overlay:
 
 
 def estimate_seconds(tail_audio_s: float, pending_stream_s: float = 0.0) -> float:
-    """Schaetzung fuer den Ring: Whisper ~0,1x Audio + Cleanup ~0,03 s/Wort (2,5 Woerter/s) + Grundkosten."""
-    words = tail_audio_s * 2.5
-    return 0.6 + tail_audio_s * 0.1 + words * 0.03 + pending_stream_s * 0.13
+    """Schaetzung fuer den Ring: Whisper ~0,1x Audio + Cleanup ~0,03 s/Wort (2,5 Woerter/s) + Grundkosten.
+    pending_stream_s = Audio des Abschnitts, den der Streamer beim Loslassen gerade rechnet — der
+    kostet dasselbe wie der Rest (STT + Cleanup) und gehoert in die Prognose (12.09.2026: vorher
+    stand der Ring bei 95 % und wartete auf genau diesen Abschnitt)."""
+    # Koeffizienten aus 8 echten Diktaten (13.09.2026, data/app.log): stt+cleanup zusammen
+    # ~0,70 s Grundkosten + ~0,10 s je Sekunde Audio. Die alte Formel schaetzte das Doppelte,
+    # deshalb stand der Ring gefuehlt still.
+    je_sekunde = 0.10
+    return 0.70 + tail_audio_s * je_sekunde + pending_stream_s * je_sekunde

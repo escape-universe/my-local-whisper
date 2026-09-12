@@ -46,7 +46,14 @@ STATE_PATH = ROOT / "state.json"
 
 
 def _beep(kind: str = "ok") -> None:
-    """Kurzer Ton: ok (hoch) / pasted (zwei kurze hoch) / start (kurz mittel) / error (tief)."""
+    """Kurzer Ton: ok (hoch) / pasted (zwei kurze hoch) / start (kurz mittel) / error (tief).
+    Laeuft im eigenen Thread: winsound.Beep blockiert so lange wie der Ton dauert, und beim
+    Loslassen der Taste liegt dieser Weg vor dem Anzeigefeld (gemessen 13.09.2026: 68 ms statt
+    1 ms, bis „Aufnahme aus" erschien)."""
+    threading.Thread(target=_beep_sync, args=(kind,), daemon=True).start()
+
+
+def _beep_sync(kind: str) -> None:
     try:
         import winsound
         if kind == "pasted":
@@ -165,9 +172,11 @@ class Pipeline:
 
     def process_audio(self, arr: np.ndarray, do_inject: bool = True, ctx: dict | None = None,
                       is_cancelled: Callable[[], bool] | None = None,
-                      prefix_cleaned: str = "") -> dict:
+                      prefix_cleaned: str | Callable[[], str] = "") -> dict:
         """Voller Weg: STT -> Aliases -> Cleanup -> Aliases -> (Zwischenablage/Einfuegen). Gibt Diagnose zurueck.
         prefix_cleaned = schon waehrend der Aufnahme fertig bereinigte Abschnitte (lange Reden), kommen vor arr.
+          Darf eine Funktion sein: sie wird erst beim Zusammensetzen aufgerufen, damit die STT des Rests
+          nicht auf den Streamer warten muss (12.09.2026).
         is_cancelled() = True, wenn inzwischen ein neues Diktat begonnen hat -> Ergebnis wird verworfen."""
         result: dict = {}
         cancelled = is_cancelled or (lambda: False)
@@ -181,6 +190,8 @@ class Pipeline:
         # Whispers ERKANNTE Sprache (nicht die konfigurierte) — sie bindet Cleanup + Guard.
         result["language"] = self.last_language or self.transcriber.language or "auto"
         result["stt_s"] = round(time.time() - t0, 2)
+        if not tail and callable(prefix_cleaned):
+            prefix_cleaned = prefix_cleaned()      # ohne Rest sofort abholen (sonst gaebe es nichts zu tun)
         if not tail and not prefix_cleaned:
             result["cleaned"] = ""
             result["note"] = "leeres Transkript"
@@ -203,6 +214,8 @@ class Pipeline:
             cleaned_tail, was_cleaned = self.cleaner.clean(raw_fixed, ctx["category"], self.last_language)
             cleaned_tail, a2 = self.aliases.fix(cleaned_tail)
             applied = a1 + a2
+        if callable(prefix_cleaned):
+            prefix_cleaned = prefix_cleaned()      # jetzt erst: Streamer-Abschnitte einsammeln
         cleaned = (prefix_cleaned + " " + cleaned_tail).strip() if prefix_cleaned else cleaned_tail
         # Uebersetzungsmodus zuletzt und auf dem GESAMTtext (nicht pro Abschnitt) — sonst
         # uebersetzt jedes Stueck fuer sich und der Zusammenhang geht verloren.
@@ -409,6 +422,7 @@ class App:
         self._generation = 0           # zaehlt Aufnahmen; ein Job gilt nur, solange er der neueste ist
         self._pending: dict[int, float] = {}   # generation -> Aufnahmedauer (fuer die Verwerf-Schwelle)
         ui = cfg.get("ui", {}) or {}
+        self.beep_on_stop = bool(ui.get("beep_on_stop", True))
         self.discard_on_new = bool(ui.get("discard_pending_on_new_recording", True))
         self.discard_max_s = float(ui.get("discard_only_if_shorter_than_s", 0))
         state = _load_state()
@@ -441,6 +455,9 @@ class App:
         self._parts_lock = threading.Lock()
         self._rec_start = 0.0
         self._streamer: threading.Thread | None = None
+        self._inflight_s = 0.0         # Audio-Sekunden des Abschnitts, den der Streamer gerade rechnet
+        self._hk = None                # Hotkey (fuer die Messung Taste -> Stopp)
+        self._timing: dict = {}        # Zeitmarken der letzten Aufnahme (Ausgabe als [timing]-Zeile)
 
     # --- Hotkey callbacks (muessen schnell zurueckkehren) ---
     def _on_press(self) -> None:
@@ -508,6 +525,7 @@ class App:
                     self.tray.set_state("recording", f"{int(self._recorder.elapsed_seconds)} s")
                 time.sleep(0.5)
                 continue
+            self._inflight_s = len(chunk) / self._recorder.samplerate
             try:
                 t = time.time()
                 text = self.pipeline.transcribe(chunk)
@@ -515,6 +533,8 @@ class App:
             except Exception as e:  # noqa: BLE001
                 print(f"[stream] chunk error: {e}")
                 continue
+            finally:
+                self._inflight_s = 0.0
             if cleaned and gen == self._generation:
                 with self._parts_lock:
                     self._parts.append(cleaned)
@@ -524,12 +544,16 @@ class App:
     def _stop_recording(self) -> None:
         if not self._recorder.is_recording:
             return
+        t_stop = time.time()
         arr = self._recorder.stop()
         gen = self._generation
         duration = time.time() - self._rec_start
         self._pending[gen] = duration
-        if self.toggle_mode:
-            _beep("stop")
+        # Messung „reaktiver" (12.09.2026): Taste -> Stopp (Weg durch Hook + Worker) und Stopp -> Ring
+        release_at = float(getattr(self._hk, "last_release_at", 0.0) or 0.0)
+        self._timing = {"gen": gen, "release": release_at if release_at and t_stop - release_at < 30 else t_stop,
+                        "stop": t_stop, "stop_done": time.time(), "inflight_s": self._inflight_s,
+                        "tail_s": len(arr) / self._recorder.samplerate}
         # Alles zwischen "Aufnahme ist aus" und "Verarbeitung laeuft" ist Beiwerk (Anzeige, Fenster,
         # Fokus). Faellt hier etwas aus, darf das NIE das Diktat verschlucken: Die Aufnahme ist dann
         # schon gestoppt, aber ohne den Verarbeitungs-Thread bliebe der Text weg und das rote Feld
@@ -537,7 +561,12 @@ class App:
         # beenden"). Deshalb gefangen und mit leerem Kontext weitergemacht.
         ctx: dict = {}
         try:
-            self.pipeline.overlay.processing(overlay_mod.estimate_seconds(len(arr) / self._recorder.samplerate))
+            # Prognose = Rest + der Abschnitt, den der Streamer gerade rechnet (sonst steht der Ring bei 95 %)
+            self.pipeline.overlay.processing(overlay_mod.estimate_seconds(
+                len(arr) / self._recorder.samplerate, self._inflight_s))
+            self._timing["badge"] = time.time()
+            if self.toggle_mode or self.beep_on_stop:
+                _beep("stop")  # hoerbar „nimmt nicht mehr auf" — nach der Anzeige, damit die zuerst kommt
             # Fenster + Fokus JETZT merken (beim Stoppen), nicht erst nach der Transkription
             ctx = context_mod.foreground_info(self.cfg)
             if self.pipeline.method == "hybrid":
@@ -564,16 +593,33 @@ class App:
 
     def _process(self, arr: np.ndarray, ctx: dict, gen: int) -> None:
         try:
-            # auf den Streamer dieser Aufnahme warten (er beendet sich, sobald der Recorder aus ist)
             st = self._streamer
-            if st and st.is_alive():
-                st.join(timeout=120)
-            with self._parts_lock:
-                # Abschnitte der laufenden Aufnahme gehoeren nur zu einem Diktat, das noch gilt.
-                prefix = "" if self._is_cancelled(gen) else " ".join(self._parts)
+            timing = self._timing if self._timing.get("gen") == gen else {}
+
+            def prefix_when_ready() -> str:
+                """Die fertig bereinigten Abschnitte — erst abgeholt, wenn sie gebraucht werden
+                (beim Zusammensetzen), NICHT vor der STT des Rests. So laeuft der Cleanup des
+                Abschnitts, der beim Loslassen in Arbeit war, parallel zur STT des Rests
+                (12.09.2026: vorher wartete alles auf den Streamer, bevor irgendetwas begann)."""
+                t = time.time()
+                if st and st.is_alive():
+                    st.join(timeout=120)
+                timing["stream_wait_s"] = time.time() - t
+                with self._parts_lock:
+                    # Abschnitte gehoeren nur zu einem Diktat, das noch gilt.
+                    return "" if self._is_cancelled(gen) else " ".join(self._parts)
+
             res = self.pipeline.process_audio(arr, do_inject=True, ctx=ctx,
                                               is_cancelled=lambda: self._is_cancelled(gen),
-                                              prefix_cleaned=prefix)
+                                              prefix_cleaned=prefix_when_ready)
+            if timing:
+                fertig = time.time()
+                print("[timing] #%d key->stop %.0f ms, stop->badge %.0f ms, tail %.1f s + chunk %.1f s audio, "
+                      "streamer wait %.2f s, stt %ss, cleanup %ss, total since release %.2f s" % (
+                          gen, (timing["stop"] - timing["release"]) * 1000,
+                          (timing.get("badge", timing["stop_done"]) - timing["stop"]) * 1000,
+                          timing["tail_s"], timing["inflight_s"], timing.get("stream_wait_s", 0.0),
+                          res.get("stt_s", "?"), res.get("cleanup_s", "?"), fertig - timing["release"]))
             if res.get("note", "").startswith("verworfen"):
                 print(f"[dictation] #{gen} {res['note']}")
                 self.pipeline.overlay.hide()
@@ -779,6 +825,7 @@ class App:
 
         key = self.cfg.get("hotkey", {}).get("key", "ctrl_r")
         hk = HoldToTalk(key, self._on_press, self._on_release)
+        self._hk = hk
         hk.start()
         if self.snip_enabled:
             weg = snip_mod.cleanup_old(self.snip_folder, self.snip_keep_days)
@@ -877,7 +924,50 @@ def cmd_clean_text(cfg: dict, text: str) -> int:
     return 0
 
 
+class _Stamped:
+    """Schreibt jede Zeile mit Uhrzeit davor in eine Datei (fuer die fensterlose Instanz)."""
+
+    def __init__(self, fh):
+        self._fh = fh
+        self._at_line_start = True
+
+    def write(self, s: str) -> int:
+        if not s:
+            return 0
+        out = []
+        for teil in s.splitlines(True):
+            if self._at_line_start and teil.strip():
+                out.append(time.strftime("%H:%M:%S ") + teil)
+            else:
+                out.append(teil)
+            self._at_line_start = teil.endswith("\n")
+        self._fh.write("".join(out))
+        self._fh.flush()
+        return len(s)
+
+    def flush(self) -> None:
+        self._fh.flush()
+
+
+def _attach_file_log(path: Path, max_bytes: int = 2_000_000) -> None:
+    """Ohne Konsole (pythonw) ging jede Ausgabe bisher ins Leere — ein Absturz oder eine
+    Zeitmessung war damit unsichtbar (Vorfall 09.09.2026). Jetzt: data/app.log, Uhrzeit je
+    Zeile, bei mehr als max_bytes wird die aeltere Haelfte verworfen."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() and path.stat().st_size > max_bytes:
+            rest = path.read_bytes()[-max_bytes // 2:]
+            path.write_bytes(rest[rest.find(b"\n") + 1:])
+        fh = open(path, "a", encoding="utf-8", buffering=1)  # noqa: SIM115 — lebt so lange wie der Prozess
+        sys.stdout = sys.stderr = _Stamped(fh)  # type: ignore[assignment]
+        print("[app] --- start %s ---" % datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    except Exception:  # noqa: BLE001 — ohne Protokoll weiterlaufen ist besser als gar nicht
+        pass
+
+
 def main() -> int:
+    if sys.stdout is None or sys.stderr is None:       # fensterlos gestartet (pythonw)
+        _attach_file_log(ROOT / "data" / "app.log")
     ap = argparse.ArgumentParser(description="my-local-whisper")
     ap.add_argument("--list-devices", action="store_true")
     ap.add_argument("--transcribe-file", metavar="WAV")

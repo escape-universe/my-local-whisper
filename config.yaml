@@ -18,7 +18,9 @@ audio:
   max_seconds: 3600       # Safety limit (1 h). Memory use: 16 kHz float32 = 3.8 MB per minute. When reached: a beep, a tray note, and the recording is finished cleanly.
   # Long dictations: Whisper already transcribes WHILE you speak, as soon as more than chunk_seconds
   # are buffered, cut at the last pause in speech. When you stop, only the remainder is left to do.
-  chunk_seconds: 25
+  # 12 rather than 25: whatever is left to compute after you release is then at most ~12 s of audio.
+  # Smaller = done sooner after release, at the price of more clean-up calls while you speak.
+  chunk_seconds: 12
   chunk_silence_s: 0.45
   # The microphone stream stays open for the lifetime of the app, so recording starts the instant
   # you press the key. Opening a stream on demand can take seconds on Windows, which used to swallow
@@ -130,6 +132,9 @@ ui:
   notify_on_blocked_window: true   # tray note when an elevated window swallows the paste (Windows UIPI); only for method clipboard/sendinput
   notify_on_ready: true    # tray note "Ready - press Ctrl+V" with a preview when the text was not pasted automatically
   beep_on_ready: true      # sound: one high beep = on the clipboard, double = pasted, low = error
+  # A short low beep THE MOMENT YOU RELEASE - the audible answer to "is it still recording?".
+  # The badge says it too (a grey stop square, "recording off"), but you hear this one without looking.
+  beep_on_stop: true
   # A small badge next to the mouse pointer: red plus seconds while recording, then a progress ring
   # with a percentage, then a green check ("Pasted" / "Ready - press Ctrl+V").
   # It is click-through and never takes the focus. false = off (beeps and tray notes stay).

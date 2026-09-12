@@ -9,9 +9,10 @@ echo.
 echo ==== KALIBRIERUNG ====
 echo Rechte Strg gedrueckt halten, die angezeigten Begriffe vorlesen (gern als Satz), loslassen.
 echo Dann pro fehlendem Begriff: j = Vorschlag uebernehmen, n = nicht, oder richtige Schreibweise tippen.
-echo Enter = naechste Runde, w = Runde wiederholen, q = Ende.
+echo Enter = naechste Runde, w = Runde wiederholen, q = Ende.
+echo Nur ein Abschnitt (z.B. die englischen Begriffe): kalibrieren.bat --nur englisch
 echo.
-py whisperflow.py --calibrate
+py whisperflow.py --calibrate %*
 echo.
 echo Kalibrierung beendet. Tray-App wird neu gestartet ...
 start "" wscript.exe "%~dp0start-whisperflow-silent.vbs"
