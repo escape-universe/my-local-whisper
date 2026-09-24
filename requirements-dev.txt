@@ -1,0 +1,9 @@
+# Tests und Lint (pytest, ruff), ohne Windows, Mikrofon, GPU und Ollama. Die App braucht requirements.txt.
+# faster-whisper, pynput, sounddevice, pywin32, pystray, uiautomation fehlen hier absichtlich:
+# die Tests ersetzen sie durch Attrappen (tests/conftest.py).
+pytest>=7.0
+ruff>=0.5
+numpy>=1.26
+PyYAML>=6.0
+requests>=2.31
+Pillow>=10.0

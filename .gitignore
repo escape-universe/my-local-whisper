@@ -8,6 +8,8 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+.pytest_cache/
+.ruff_cache/
 
 # Editor / System
 .vscode/
