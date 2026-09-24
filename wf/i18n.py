@@ -35,8 +35,9 @@ TABLE: dict[str, dict[str, str]] = {
         "menu_open_log": "Verlauf öffnen",
         "menu_open_images": "Bilder öffnen",
         "snip_hint": "Bereich aufziehen   ·   Enter = ganzer Bildschirm   ·   Esc bricht ab",
-        # badge_snip_ready/_arm/_full und die badge_*-Zeilen weiter unten: das Anzeigefeld hat nur
-        # wenig Platz (wf/overlay.py _W, Text ab x = 32, Budget siehe tests/test_i18n.py
+        # badge_snip_ready/_arm/_full und die badge_*-Zeilen weiter unten: das Anzeigefeld waechst
+        # seit 24.09.2026 mit dem Text, deutsche Texte sollen aber in seine Mindestbreite passen
+        # (wf/overlay.py _W_MIN, Text ab x = 32, Budget siehe tests/test_i18n.py
         # _FELD_BREITE_PX). "Zwischenablage" passt darin nicht neben weiteren Woertern; das
         # kuerzere "Ablage" steht deshalb nur in diesen breiten-kritischen badge_*-Zeilen, die
         # note_*-Meldungen (Tray-Popup, kein Platzlimit) behalten "Zwischenablage". Gemessen
@@ -267,7 +268,7 @@ TABLE: dict[str, dict[str, str]] = {
         "menu_quit": "Esci",
         "badge_listening": "trascrivo",
         "badge_recording": "registrazione",
-        "badge_stopped": "registrazione off",
+        "badge_stopped": "registrazione ferma",
         "badge_cleaning": "sistemo",
         "badge_translating": "traduco",
         "badge_ready": "Pronto: premi Ctrl+V",
@@ -310,13 +311,35 @@ def detect_system_language() -> str:
     except Exception:  # noqa: BLE001  — kein Windows oder Aufruf nicht moeglich
         primary = ""
     if not primary:
-        try:
-            import locale
-            tag = (locale.getdefaultlocale()[0] or "")[:2].lower()
-            primary = tag if tag in TABLE else ""
-        except Exception:  # noqa: BLE001
-            primary = ""
+        primary = _sprache_des_gebietsschemas()
     return primary or DEFAULT
+
+
+def _sprache_des_gebietsschemas() -> str:
+    """Rueckfall, wenn die Oberflaechensprache nicht passt: die Sprache des Gebietsschemas.
+
+    Bis 24.09.2026 kam sie aus locale.getdefaultlocale(), das seit Python 3.11 veraltet ist
+    (Entfernung angekuendigt). Jetzt dieselben Quellen ohne die veraltete Funktion: unter Windows
+    das Benutzer-Gebietsschema wie dort (GetUserDefaultLocaleName, z. B. "de-DE"), sonst LC_CTYPE,
+    das Python beim Start aus LC_ALL/LC_CTYPE/LANG setzt (locale.getlocale, z. B. "de_DE").
+    Unter Windows bewusst nicht locale.getlocale(): dort kommen Namen wie "Estonian_Estonia.1257"
+    heraus, deren Anfang "es" faelschlich als Spanisch durchginge."""
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001  — kein Windows
+        kernel32 = None
+    try:
+        if kernel32 is not None:
+            puffer = ctypes.create_unicode_buffer(85)                  # LOCALE_NAME_MAX_LENGTH
+            name = puffer.value if kernel32.GetUserDefaultLocaleName(puffer, 85) else ""
+        else:
+            import locale
+            name = locale.getlocale()[0] or ""
+    except Exception:  # noqa: BLE001
+        name = ""
+    tag = name[:2].lower()
+    return tag if tag in TABLE else ""
 
 
 def resolve(setting: str | None) -> str:

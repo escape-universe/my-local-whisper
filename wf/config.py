@@ -63,7 +63,13 @@ def load_employee_names(cfg: dict[str, Any]) -> tuple[list[str], list[str]]:
     except Exception as e:  # noqa: BLE001
         print(f"[config] name list unreadable ({e}) -> continuing without extra names")
         return [], []
-    full = [m["name"].strip() for m in members]
+    # Ein Name aus Leerzeichen oder ein Name, der kein Text ist (z. B. 123), brach bis 24.09.2026
+    # den App-Start ab (IndexError/AttributeError, diese Zeilen stehen hinter dem try). Jetzt
+    # werden solche Eintraege uebersprungen, der Rest der Liste gilt.
+    full = [m["name"].strip() for m in members if isinstance(m["name"], str) and m["name"].strip()]
+    weg = len(members) - len(full)
+    if weg:
+        print(f"[config] name list: skipped {weg} active {'entry' if weg == 1 else 'entries'} without a usable name")
     first: list[str] = []
     for n in full:
         f = n.split()[0]

@@ -2,7 +2,8 @@
 
 Die Oberflaechensprache ist globaler Zustand. Jeder Test, der sie aendert, pinnt sie vorher mit
 monkeypatch (Fixture sprache), damit sie danach wieder stimmt und kein anderer Test davon abhaengt.
-Die Systemsprache wird nie echt abgefragt (unter Windows waere das GetUserDefaultUILanguage)."""
+Windows wird nie echt gefragt (GetUserDefaultUILanguage/GetUserDefaultLocaleName sind Attrappen);
+nur test_systemsprache_ohne_deprecation_warnung liest das echte locale-Modul."""
 from __future__ import annotations
 
 import ctypes
@@ -10,6 +11,7 @@ import locale
 import re
 import string
 import types
+import warnings
 
 import pytest
 
@@ -117,16 +119,26 @@ def test_keine_englischen_signalwoerter_in_de():
     assert not schuldig
 
 
-# --- Breite im Anzeigefeld (wf/overlay.py: _W breit, Text beginnt bei x = 32) -------------------
-#: Von wf.overlay._W abgeleitet statt fest verdrahtet, damit ein spaeteres Paket, das die
-#: Feldbreite aendert (z. B. ein mitwachsendes Feld), diesen Test nicht stillschweigend
-#: unwirksam macht. Reserve von 6 px zusaetzlich zu "_W minus 32 px Textanfang" (Nachbesserung
-#: Runde 2, 24.09.2026): der runde Rand der Pille schneidet auf Buchstabenhoehe schon vor dem
-#: rechten Feldrand ein (~117 px bei _W = 150), und Segoe UI ist nicht exakt Liberation Sans -
-#: die 6 px fangen beides ab. Ohne Reserve (voll bis _W - 32) bestand "Fehler, siehe Konsole"
-#: (Runde-1-Text, 119 px gerastert) den Test noch mit 1 px "Luft" nach oben.
-_FELD_RESERVE_PX = 6
-_FELD_BREITE_PX = overlay._W - 32 - _FELD_RESERVE_PX
+@pytest.mark.parametrize("code", [c for c, _ in i18n.LANGUAGES if c != "en"])
+def test_kein_englisches_off_in_anderen_sprachen(code):
+    """Pruefung Arbeitspaket 2: italienisch badge_stopped hiess "registrazione off", halb Englisch
+    (en: "recording off", "Off (keep my language)"). Seit 24.09.2026 "registrazione ferma"."""
+    schuldig = {k: v for k, v in i18n.TABLE[code].items() if re.search(r"\boff\b", v, re.IGNORECASE)}
+    assert not schuldig
+
+
+# --- Breite im Anzeigefeld (wf/overlay.py: mindestens _W_MIN breit, Text ab x = _TEXT_X) -------
+#: Seit Arbeitspaket 3 (24.09.2026) waechst das Feld mit dem Text; die fruehere feste Breite
+#: (150 px) ist jetzt seine Mindestbreite. Deutsche Texte sollen ohne Wachsen hineinpassen, das
+#: Budget ist deshalb genau die Textbreite, bis zu der wf.overlay.badge_width() noch _W_MIN liefert:
+#: _W_MIN minus Textanfang (_TEXT_X = 32) minus Luft rechts (_TEXT_RAND = 6), aus wf/overlay.py
+#: abgeleitet statt fest verdrahtet (test_budget_ist_genau_die_grenze_zum_wachsen). Die 6 px waren
+#: zuvor die Reserve dieses Tests (Nachbesserung Runde 2): der runde Rand der Pille schneidet auf
+#: Buchstabenhoehe schon vor dem rechten Feldrand ein (~117 px bei 150 px Feldbreite), und Segoe UI
+#: ist nicht exakt Liberation Sans. Ohne diese 6 px (Budget 150 - 32 = 118) haette die ungerasterte
+#: Naeherung aus Runde 1 (RAQM) "Fehler, siehe Konsole" mit 116,3 px noch durchgelassen; gerastert
+#: (BASIC, wie Tk/GDI, so wie die Tabelle unten) sind es 119 px, das scheitert schon an 118.
+_FELD_BREITE_PX = overlay._W_MIN - overlay._TEXT_X - overlay._TEXT_RAND
 
 #: Zusatz, den wf/overlay.py an manche badge_*-Texte anhaengt (tick(), _elapsed_pct()): ein
 #: zweistelliger Prozentsatz vor badge_listening/_cleaning/_translating (Verarbeitung), die
@@ -159,9 +171,10 @@ _ZEICHENBREITE: dict[str, int] = {
 }
 #: Ersatzwert fuer ein Zeichen, das (noch) nicht in _ZEICHENBREITE steht: nicht das breiteste
 #: HEUTE benutzte Zeichen (das war in Runde 1 der Fehler - 10,7 lag unter 'W', '@', '…' und '—'),
-#: sondern mindestens das breiteste Zeichen der Schrift ueberhaupt (mit BASIC gemessen: '@'/'…'/
-#: '—' bei 12 px) plus etwas Luft, damit ein kuenftig neu eingefuegtes Zeichen nicht zu knapp
-#: durchrutscht.
+#: sondern breiter als jedes Zeichen, das in deutschem Text vorkommt (mit BASIC gemessen: '@'/'…'/
+#: '—' bei 12 px), damit ein kuenftig neu eingefuegtes Zeichen nicht zu knapp durchrutscht. Die
+#: Schrift selbst hat breitere Zeichen (bis 16 px, z. B. 'Ǆ' oder 'Ѿ'), aber keins davon kommt
+#: in deutschem Text vor (nachgemessen 24.09.2026, Arbeitspaket 3).
 _UNBEKANNTES_ZEICHEN = 13
 
 
@@ -174,9 +187,9 @@ def _breite(text: str) -> int:
 def test_deutsche_badge_texte_passen_ins_anzeigefeld(key):
     """Nachbesserung Arbeitspaket 2, Runde 1 (24.09.2026): mehrere deutsche badge_*-Texte waren
     breiter als das Feld und wurden am rechten Rand abgeschnitten (u. a. "Zwischenablage gesperrt",
-    "Bereit - Strg+V (angehaengt)", "loslassen fuer den Ausschnitt"). Nur Deutsch: die englische
-    Tabelle laeuft an einigen Stellen ebenfalls ueber - das ist ein eigenes Paket (ein
-    mitwachsendes Feld statt einer festen Breite), hier bewusst nicht mitgeprueft."""
+    "Bereit - Strg+V (angehaengt)", "loslassen fuer den Ausschnitt"). Nur Deutsch: fuer laengere
+    Texte der anderen Sprachen waechst das Feld seit Arbeitspaket 3 mit (wf/overlay.py fit_label),
+    deutsche sollen in die Mindestbreite passen."""
     prefix, suffix = _AFFIXE.get(key, ("", ""))
     text = prefix + i18n.TABLE["de"][key] + suffix
     breite = _breite(text)
@@ -200,6 +213,13 @@ def test_breitentest_erkennt_bekannte_zu_breite_texte(text):
     """Belegt, dass _breite()/_FELD_BREITE_PX tatsaechlich etwas ablehnen, nicht nur Kosmetik
     sind: alle vier Beispiele haben frueher wirklich in wf/i18n.py TABLE["de"] gestanden."""
     assert _breite(text) > _FELD_BREITE_PX, f"{text!r} haette abgelehnt werden muessen"
+
+
+def test_budget_ist_genau_die_grenze_zum_wachsen():
+    """Ein deutscher Text, der den Breitentest besteht, laesst das Feld nicht wachsen; ein Pixel
+    mehr schon. So prueft der Test gegen die Mindestbreite des mitwachsenden Felds."""
+    assert overlay.badge_width(_FELD_BREITE_PX) == overlay._W_MIN == 150
+    assert overlay.badge_width(_FELD_BREITE_PX + 1) == overlay._W_MIN + 1
 
 
 # --- set_language / t --------------------------------------------------------------------------
@@ -243,30 +263,68 @@ def test_fester_code_sticht_auto(monkeypatch, einstellung, erwartet):
     assert i18n.resolve(einstellung) == erwartet
 
 
-def _windows_meldet(monkeypatch, lcid):
-    kernel32 = types.SimpleNamespace(GetUserDefaultUILanguage=lambda: lcid)
+def _windows_meldet(monkeypatch, lcid, gebietsschema="ja-JP"):
+    """Windows-Attrappe: lcid = Sprache der Oberflaeche (GetUserDefaultUILanguage), gebietsschema
+    = Benutzer-Gebietsschema, also Zahlen-/Datumsformat (GetUserDefaultLocaleName; "" = Fehler)."""
+    def gebietsschema_name(puffer, laenge):
+        puffer.value = gebietsschema
+        return len(gebietsschema) + 1 if gebietsschema else 0
+
+    kernel32 = types.SimpleNamespace(GetUserDefaultUILanguage=lambda: lcid,
+                                     GetUserDefaultLocaleName=gebietsschema_name)
     monkeypatch.setattr(ctypes, "windll", types.SimpleNamespace(kernel32=kernel32), raising=False)
+
+
+@pytest.fixture
+def ohne_getdefaultlocale(monkeypatch):
+    """locale.getdefaultlocale() ist seit Python 3.11 veraltet, i18n fragt es seit 24.09.2026 nicht
+    mehr. pytest.fail wirft keine Exception-Unterklasse: kein `except Exception` verschluckt es."""
+    def veraltet(*args, **kwargs):
+        pytest.fail("locale.getdefaultlocale() ist veraltet und darf nicht mehr gerufen werden")
+
+    monkeypatch.setattr(locale, "getdefaultlocale", veraltet, raising=False)
 
 
 @pytest.mark.parametrize("lcid, erwartet", [(0x0407, "de"), (0x0C07, "de"), (0x0409, "en"),
                                             (0x0419, "ru"), (0x0C0A, "es"), (0x0410, "it")])
-def test_systemsprache_aus_windows(monkeypatch, lcid, erwartet):
-    _windows_meldet(monkeypatch, lcid)
-    monkeypatch.setattr(locale, "getdefaultlocale", lambda: ("ja_JP", "UTF-8"))
+def test_systemsprache_aus_windows(monkeypatch, ohne_getdefaultlocale, lcid, erwartet):
+    """Die Oberflaechensprache gewinnt, auch gegen ein anderes unterstuetztes Gebietsschema."""
+    _windows_meldet(monkeypatch, lcid, "de-DE" if erwartet == "it" else "it-IT")
     assert i18n.detect_system_language() == erwartet
 
 
-def test_systemsprache_unbekannt_dann_locale_dann_englisch(monkeypatch):
-    _windows_meldet(monkeypatch, 0x0411)                        # Japanisch: nicht unterstuetzt
-    monkeypatch.setattr(locale, "getdefaultlocale", lambda: ("it_IT", "UTF-8"))
-    assert i18n.detect_system_language() == "it"
-    monkeypatch.setattr(locale, "getdefaultlocale", lambda: ("ja_JP", "UTF-8"))
-    assert i18n.detect_system_language() == "en"
+@pytest.mark.parametrize("gebietsschema, erwartet", [
+    ("it-IT", "it"), ("de-AT", "de"), ("es-MX", "es"), ("ja-JP", "en"), ("et-EE", "en"), ("", "en"),
+])
+def test_systemsprache_unbekannt_dann_gebietsschema_dann_englisch(monkeypatch, ohne_getdefaultlocale,
+                                                                  gebietsschema, erwartet):
+    """Oberflaeche in einer nicht unterstuetzten Sprache: unter Windows entscheidet das Benutzer-
+    Gebietsschema (dieselbe Quelle wie frueher getdefaultlocale), sonst Englisch. locale.getlocale()
+    bleibt unter Windows aussen vor: sein "Estonian_Estonia" ginge sonst als "es" durch."""
+    _windows_meldet(monkeypatch, 0x0411, gebietsschema)         # Japanisch: nicht unterstuetzt
+    monkeypatch.setattr(locale, "getlocale", lambda *args: ("Estonian_Estonia", "1257"))
+    assert i18n.detect_system_language() == erwartet
 
 
-def test_systemsprache_ohne_windows(monkeypatch):
+def test_systemsprache_ohne_windows(monkeypatch, ohne_getdefaultlocale):
     monkeypatch.setattr(ctypes, "windll", types.SimpleNamespace(), raising=False)
-    monkeypatch.setattr(locale, "getdefaultlocale", lambda: ("ru_RU", "UTF-8"))
+    monkeypatch.setattr(locale, "getlocale", lambda *args: ("ru_RU", "UTF-8"))
     assert i18n.detect_system_language() == "ru"
-    monkeypatch.setattr(locale, "getdefaultlocale", lambda: (None, None))
+    monkeypatch.setattr(locale, "getlocale", lambda *args: (None, None))
     assert i18n.detect_system_language() == "en"
+
+    def unbekannt(*args):
+        raise ValueError("unknown locale: xx")
+
+    monkeypatch.setattr(locale, "getlocale", unbekannt)
+    assert i18n.detect_system_language() == "en"
+
+
+def test_systemsprache_ohne_deprecation_warnung(monkeypatch):
+    """Mit dem echten locale-Modul (ohne Windows-Weg) keine DeprecationWarning mehr. Vorher kam
+    sie von locale.getdefaultlocale(), dessen Entfernung fuer Python 3.15 angekuendigt ist."""
+    monkeypatch.setattr(ctypes, "windll", types.SimpleNamespace(), raising=False)
+    with warnings.catch_warnings(record=True) as warnungen:
+        warnings.simplefilter("always")
+        assert i18n.detect_system_language() in i18n.TABLE
+    assert not [w for w in warnungen if issubclass(w.category, DeprecationWarning)]

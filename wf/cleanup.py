@@ -78,12 +78,29 @@ def _strip_think(text: str) -> str:
     return _THINK_RX.sub("", text).strip()
 
 
+# Anfuehrungszeichen, in die das Modell trotz Verbot manchmal die GANZE Antwort packt: gerade,
+# englische “…” und deutsche „…“. Entfernt wird nur ein solches Paar aussen, und nur, wenn innen
+# keins dieser Zeichen mehr steht - sonst gehoeren sie zum Satz (24.09.2026).
+_HUELLEN = (('"', '"'), ("“", "”"), ("„", "“"))
+_ANFUEHRUNGSZEICHEN = '"“”„'
+
+
 def _extract(text: str) -> str:
     """Falls das Modell doch <transcript>-Tags oder Preamble mitliefert, nur den Kern behalten."""
     m = _TRANSCRIPT_RX.search(text)
     if m:
         return m.group(1).strip()
-    return text.strip().strip('"').strip()
+    text = text.strip()
+    if not text.strip(_ANFUEHRUNGSZEICHEN).strip():   # nur Anfuehrungszeichen: nichts Brauchbares
+        return ""
+    # Bis 24.09.2026 strip('"'): das nahm auch ein Anfuehrungszeichen, das zum Satz gehoert
+    # ('Er sagte "Hallo"' -> 'Er sagte "Hallo').
+    for auf, zu in _HUELLEN:
+        innen = text[len(auf):-len(zu)]
+        if (len(text) >= 2 and text.startswith(auf) and text.endswith(zu)
+                and not any(z in innen for z in _ANFUEHRUNGSZEICHEN)):
+            return innen.strip()
+    return text
 
 
 def _lang_rule(source_lang: str) -> str:
@@ -154,14 +171,19 @@ class Cleaner:
         self.dictionary = dictionary
 
     def _payload(self, messages: list[dict[str, str]], max_tokens: int,
-                 model: str = "", keep_alive: str = "") -> dict[str, Any]:
+                 model: str = "", keep_alive: str | int | None = None) -> dict[str, Any]:
+        # Nur "nicht gesetzt" (None, oder "" wie der fruehere Platzhalter) faellt auf das keep_alive
+        # des Cleanup-Modells zurueck. Bis 24.09.2026 stand hier `keep_alive or self.keep_alive`:
+        # das machte aus translate_keep_alive: 0 (sofort entladen) z. B. -1 (nie entladen).
+        if keep_alive is None or keep_alive == "":
+            keep_alive = self.keep_alive
         if self.native:
             # Ollama /api/chat: Sampling-Parameter unter "options", keep_alive top-level.
             return {
                 "model": model or self.model,
                 "messages": messages,
                 "stream": False,
-                "keep_alive": keep_alive or self.keep_alive,
+                "keep_alive": keep_alive,
                 "options": {"temperature": self.temperature, "top_p": 0.9, "num_predict": max_tokens},
             }
         p: dict[str, Any] = {
@@ -173,7 +195,7 @@ class Cleaner:
             "stream": False,
         }
         # Ollama-spezifisch (llama-server ignoriert unbekannte Felder):
-        p["keep_alive"] = keep_alive or self.keep_alive
+        p["keep_alive"] = keep_alive
         return p
 
     @staticmethod
@@ -324,7 +346,7 @@ class Cleaner:
         return None
 
     def _ask(self, messages: list[dict[str, str]], max_tokens: int,
-             model: str = "", keep_alive: str = "", timeout: int = 0) -> str | None:
+             model: str = "", keep_alive: str | int | None = None, timeout: int = 0) -> str | None:
         """Ein LLM-Aufruf. None = nicht erreichbar/fehlerhaft (Aufrufer faellt auf den Eingangstext zurueck)."""
         try:
             r = self._http.post(self.url, json=self._payload(messages, max_tokens, model, keep_alive),

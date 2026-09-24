@@ -8,7 +8,7 @@ set PYTHONIOENCODING=utf-8
 echo Fensterlose Instanz wird angehalten ...
 powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='pythonw.exe' or Name='python.exe'\" | Where-Object { $_.CommandLine -like '*whisperflow.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
 echo.
-echo ==== WHISPERFLOW TESTMODUS ====
+echo ==== MY-LOCAL-WHISPER TESTMODUS ====
 echo Rechte Strg halten, sprechen, loslassen. Hier erscheinen ROH, BEREINIGT, Zeiten und Guard-Meldungen.
 echo Kalibrieren (Begriffe vorlesen, Aliase bestaetigen): kalibrieren.bat
 echo.

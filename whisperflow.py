@@ -1,4 +1,4 @@
-"""whisperflow-local — lokaler, privater Diktat-Assistent (Wispr-Flow-Klon).
+"""my-local-whisper — lokaler, privater Diktat-Assistent (Wispr-Flow-Klon).
 
 Pipeline: Hotkey (halten ODER Umschalt-Modus) -> Mic -> faster-whisper (GPU, bei langen Reden schon
 waehrend der Aufnahme abschnittsweise) -> Alias-Korrektur -> lokales LLM-Cleanup (gestueckelt)
@@ -659,7 +659,7 @@ class App:
         diktiert der Nutzer wieder normal in seiner Sprache (Entscheidung 08.09.2026)."""
         self.pipeline.translate_to = code or ""
         if code:
-            print(f"[app] Übersetzungsmodus: alles wird nach {lang_mod.name_en(code)} übersetzt.")
+            print(f"[app] translation on - everything is translated into {lang_mod.name_en(code)}.")
             if self.tray:
                 self.tray.notify(i18n.t("note_translate_on", lang=lang_mod.name_native(code)))
         else:
@@ -805,7 +805,7 @@ class App:
         code = i18n.set_language(i18n.resolve(setting))
         st = _load_state(); st["ui_lang"] = setting; _save_state(st)
         snip_mod.set_hint(i18n.t("snip_hint"))
-        print(f"[app] UI-Sprache: {code} (Einstellung: {setting})")
+        print(f"[app] UI language: {code} (setting: {setting})")
         if self.tray:
             self.tray.notify(i18n.t("note_language_set", lang=i18n.label(code)))
 

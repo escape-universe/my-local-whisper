@@ -106,10 +106,18 @@ def test_namensliste_nur_aktive_vornamen_ohne_doppelte(tmp_path):
     assert _namen(tmp_path, daten) == (["Anna", "Cem"], ["Anna Muster", "anna Anders", "Cem Test"])
 
 
-@pytest.mark.xfail(strict=True, reason="Fehler in wf/config.py:66-69: ein Name aus Leerzeichen "
-                   "(IndexError) oder ein Name, der kein Text ist (AttributeError), bricht den Start "
-                   "ab, weil diese Zeilen hinter dem try/except stehen. Erwartet: kein Absturz.")
 @pytest.mark.parametrize("eintrag", [{"name": "   ", "aktiv": True}, {"name": 123, "aktiv": True}])
-def test_namensliste_mit_kaputtem_eintrag_stuerzt_nicht_ab(tmp_path, eintrag):
-    vornamen, vollnamen = _namen(tmp_path, {"members": [{"name": "Anna Muster", "aktiv": True}, eintrag]})
-    assert isinstance(vornamen, list) and isinstance(vollnamen, list)
+def test_namensliste_mit_kaputtem_eintrag_stuerzt_nicht_ab(tmp_path, capsys, eintrag):
+    """Bis 24.09.2026 brach ein solcher Eintrag den App-Start ab (IndexError/AttributeError hinter
+    dem try). Jetzt: Eintrag ueberspringen, eine Konsolenzeile, der Rest der Liste gilt."""
+    daten = {"members": [{"name": "Anna Muster", "aktiv": True}, eintrag, {"name": "Cem Test", "aktiv": True}]}
+    assert _namen(tmp_path, daten) == (["Anna", "Cem"], ["Anna Muster", "Cem Test"])
+    assert capsys.readouterr().out == "[config] name list: skipped 1 active entry without a usable name\n"
+
+
+def test_namensliste_mehrere_kaputte_eintraege_eine_zeile(tmp_path, capsys):
+    daten = {"members": [{"name": "   ", "aktiv": True}, {"name": ["Anna"], "aktiv": True},
+                         {"name": "Ben Beispiel", "aktiv": True}, {"name": 7, "aktiv": True},
+                         {"name": "   ", "aktiv": False}]}
+    assert _namen(tmp_path, daten) == (["Ben"], ["Ben Beispiel"])
+    assert capsys.readouterr().out.splitlines() == ["[config] name list: skipped 3 active entries without a usable name"]

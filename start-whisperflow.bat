@@ -16,6 +16,6 @@ if errorlevel 1 (
 REM 3) Diktat-App fensterlos starten (nur Tray-Icon unten rechts)
 start "" pyw whisperflow.py
 
-echo whisperflow-local gestartet. Icon unten rechts im Tray (blau = bereit).
+echo my-local-whisper gestartet. Icon unten rechts im Tray (blau = bereit).
 echo Rechte Strg gedrueckt halten + sprechen + loslassen. Hoher Ton = Text in der Zwischenablage, Strg+V fuegt ein.
 ping -n 3 localhost >nul

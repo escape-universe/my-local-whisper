@@ -1034,7 +1034,7 @@ def test_context() -> None:
 
 
 def run_selftests() -> int:
-    print("=== whisperflow-local Selbsttests ===\n")
+    print("=== my-local-whisper Selbsttests ===\n")
     test_imports()
     test_config_and_dict()
     test_cleanup_prompt()

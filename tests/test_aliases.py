@@ -54,8 +54,18 @@ def test_laengste_variante_zuerst(tmp_path):
 
 
 def test_angewandte_regeln_werden_gemeldet(tmp_path):
+    """Lesbar als 'Variante->Ziel' (die Liste landet in der Konsole). Bis 24.09.2026 stand dort
+    das Regex-Muster, z. B. '(?<![\\wäöüÄÖÜß])Nextclout(?![\\wäöüÄÖÜß])->Nextcloud'."""
     fx = _fixer(tmp_path, "Nextcloud = Nextclout\nOllama = Olama\n")
-    text, angewandt = fx.fix("Olama und Nextclout")
-    assert text == "Ollama und Nextcloud" and len(angewandt) == 2
-    assert all(eintrag.endswith(("->Nextcloud", "->Ollama")) for eintrag in angewandt)
+    text, angewandt = fx.fix("Olama und nextclout")
+    assert text == "Ollama und Nextcloud"
+    assert angewandt == ["Nextclout->Nextcloud", "Olama->Ollama"]     # laengste Variante zuerst
     assert fx.fix("nichts zu tun") == ("nichts zu tun", [])
+
+
+def test_ziel_mit_backslash_wird_woertlich_eingesetzt(tmp_path):
+    """Bis 24.09.2026 las re das Ziel als Ersetzungsmuster: "C:\\Temp" warf re.error (bad escape
+    \\T), "\\1" haette eine Gruppe gesucht."""
+    fx = _fixer(tmp_path, "C:\\Temp = temp ordner\nx\\1y = Gruppe eins\n")
+    assert fx.fix("Leg es in den temp ordner.") == ("Leg es in den C:\\Temp.", ["temp ordner->C:\\Temp"])
+    assert fx.fix("Das ist Gruppe eins.")[0] == "Das ist x\\1y."

@@ -1,15 +1,18 @@
 """whisperflow.py ohne Modelle: Anhaenge-Entscheidung, Zeitstempel im Protokoll, Verwerfen,
-Umschalt-Modus und die Reihenfolge der Endverarbeitung (Faelle aus selftest.py)."""
+Umschalt-Modus und die Reihenfolge der Endverarbeitung (Faelle aus selftest.py); dazu die
+Konsolen-Ausgaben beim Umschalten und der sichtbare Produktname in Skripten und Selbsttest."""
 from __future__ import annotations
 
 import io
 import re
+import types
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 import whisperflow as W
-from wf import overlay
+from wf import i18n, overlay
 
 # --- Pipeline.append_decision (Entscheidung 08.09.2026) ----------------------------------------
 LETZTER = {"text": "Hallo Welt.", "mode": "clipboard", "ts": 1000.0}
@@ -151,3 +154,39 @@ def test_leeres_transkript_und_verworfen(pipeline):
     assert pipeline.process_audio(STILLE, do_inject=False, ctx=CTX)["note"] == "leeres Transkript"
     res = pipeline.process_audio(STILLE, do_inject=False, ctx=CTX, is_cancelled=lambda: True)
     assert res["note"].startswith("verworfen") and "cleaned" not in res
+
+
+# --- Konsole englisch, sichtbarer Produktname (24.09.2026) --------------------------------------
+def test_umschalten_meldet_sich_englisch_in_der_konsole(monkeypatch, capsys):
+    """Projektkonvention (CLAUDE.md): Konsolen-Ausgaben englisch. Bis 24.09.2026 waren diese
+    zwei deutsch ("Uebersetzungsmodus: alles wird nach ... uebersetzt", "UI-Sprache: ...")."""
+    monkeypatch.setattr(i18n, "_current", "en")                 # _set_ui_language stellt sie um
+    monkeypatch.setattr(W, "_load_state", lambda: {})           # state.json bleibt unberuehrt
+    monkeypatch.setattr(W, "_save_state", lambda state: None)
+    monkeypatch.setattr(W.snip_mod, "set_hint", lambda text: None)
+    app = _app(tray=None, pipeline=types.SimpleNamespace(translate_to=""))
+    app._set_translate_to("it")
+    app._set_ui_language("de")
+    zeilen = capsys.readouterr().out.splitlines()
+    assert zeilen == ["[app] translation on - everything is translated into Italian.",
+                      "[app] UI language: de (setting: de)"]
+
+
+_START_STOP = ("start-whisperflow.bat", "stop-whisperflow.bat", "testen-konsole.bat")
+
+
+@pytest.mark.parametrize("datei", _START_STOP)
+def test_skripte_zeigen_den_produktnamen_und_finden_laufende_instanzen(datei):
+    """Sichtbar heisst das Programm my-local-whisper, nicht mehr whisperflow-local. Die Suche
+    nach laufenden Instanzen bleibt bei *whisperflow.py*, so heisst die Datei weiterhin."""
+    text = (Path(W.__file__).parent / datei).read_text(encoding="utf-8")
+    echos = [z for z in text.splitlines() if z.lower().startswith("echo")]
+    assert any("my-local-whisper" in z.lower() for z in echos)
+    assert not [z for z in echos if "whisperflow" in z.lower()]
+    assert "-like '*whisperflow.py*'" in text
+
+
+def test_selbsttest_und_moduldoku_tragen_den_produktnamen():
+    selbsttest = (Path(W.__file__).parent / "selftest.py").read_text(encoding="utf-8")
+    assert '"=== my-local-whisper Selbsttests ===\\n"' in selbsttest and "whisperflow-local" not in selbsttest
+    assert W.__doc__.startswith("my-local-whisper — ")

@@ -18,11 +18,18 @@ import math
 import sys
 import threading
 import time
+from typing import Callable
 
 from wf import i18n
 
 _OFFSET = (22, 24)      # Abstand vom Mauszeiger (Pixel)
-_W, _H = 150, 30
+# Das Feld waechst mit dem Text (24.09.2026). Vorher war es fest 150 px breit, und schon das
+# englische "Ready - Ctrl+V (appended)" wurde zu "Ready - Ctrl+V (appe" abgeschnitten. 150 px
+# bleibt die Mindestbreite (deutsche Texte passen ohne Wachsen hinein, tests/test_i18n.py),
+# 300 px die Obergrenze; was selbst dort nicht passt, wird mit „…" gekuerzt (fit_label).
+_W_MIN, _W_MAX, _H = 150, 300, 30
+_TEXT_X = 32            # hier beginnt der Text, links davon Punkt, Ring oder Haken
+_TEXT_RAND = 6          # Luft zwischen Textende und rechtem Feldrand
 
 
 class Overlay:
@@ -34,6 +41,7 @@ class Overlay:
         self._pct = 0.0
         self._t0 = 0.0
         self._eta = 1.0
+        self._pct_floor = 0.0       # darunter faellt der Ring nicht mehr (phase() mit Restschaetzung)
         self._until = 0.0
         self._stop_until = 0.0      # bis dahin zeigt "processing" das Stopp-Zeichen statt des Rings
         self._thread: threading.Thread | None = None
@@ -61,6 +69,7 @@ class Overlay:
         self._note("processing", "eta %.1f s" % eta_s)
         with self._lock:
             self._state, self._t0, self._eta, self._text, self._pct = "processing", time.time(), max(0.3, eta_s), text, 0.0
+            self._pct_floor = 0.0
             # Der Moment des Loslassens bekommt eine eigene Aussage (13.09.2026): erst „Aufnahme aus",
             # dann der Ring. Ohne das war der Wechsel aus dem Augenwinkel nicht erkennbar.
             self._stop_until = time.time() + self.STOP_HINT_S
@@ -72,9 +81,20 @@ class Overlay:
                 return
             self._text = text
             if eta_left_s is not None:
-                done = self._elapsed_pct()
-                self._t0 = time.time() - done * 0.01 * max(0.3, eta_left_s) / max(0.01, 1 - done * 0.01)
-                self._eta = (time.time() - self._t0) + max(0.3, eta_left_s)
+                # Der Ring laeuft dabei nie rueckwaerts (24.09.2026): die Kurve wird so verschoben,
+                # dass sie JETZT genau den angezeigten Wert hat und nach eta_left_s dort steht, wo
+                # sie bei einer Punktlandung steht (88,9 % bei el == eta, wie nach processing()).
+                # Die neue Schaetzung aendert also nur das Tempo ab jetzt. Bis dahin wurde linear
+                # umgerechnet, die Kurve ist aber exponentiell: bei 95 % sprang der Ring auf
+                # 87,6 % zurueck, bei 42 % auf 61 % vor.
+                jetzt = self._elapsed_pct()
+                anteil = -math.log(1 - jetzt / 100) / 2.2    # el/eta, bei dem die Kurve jetzt steht
+                if anteil < 1:
+                    self._eta = max(0.3, eta_left_s) / (1 - anteil)
+                    self._t0 = time.time() - anteil * self._eta
+                # Sonst steht der Ring schon ueber 88,9 % (die Schaetzung ist ueberzogen) und
+                # kriecht wie bisher auf 95 % zu. Die Untergrenze faengt Rundungsreste ab.
+                self._pct_floor = jetzt
 
     def done(self, text: str = "", seconds: float = 1.3) -> None:
         text = text or i18n.t("badge_ready")
@@ -105,7 +125,7 @@ class Overlay:
     def _elapsed_pct(self) -> float:
         el = time.time() - self._t0
         # weiche Kurve: schnell am Anfang, kriecht auf 95 zu
-        return min(95.0, 100.0 * (1 - math.exp(-2.2 * el / self._eta)))
+        return max(self._pct_floor, min(95.0, 100.0 * (1 - math.exp(-2.2 * el / self._eta))))
 
     def _note(self, neu_state: str, text: str = "") -> None:
         """Jeden Zustandswechsel mit Zeitstempel protokollieren (landet in data/app.log).
@@ -116,6 +136,7 @@ class Overlay:
     def _run(self) -> None:
         try:
             import tkinter as tk
+            import tkinter.font as tkfont
             import win32api
             import win32con
             import win32gui
@@ -131,9 +152,9 @@ class Overlay:
         key = "#ff00fe"
         root.configure(bg=key)
         root.attributes("-transparentcolor", key)
-        cv = tk.Canvas(root, width=_W, height=_H, bg=key, highlightthickness=0)
+        cv = tk.Canvas(root, width=_W_MIN, height=_H, bg=key, highlightthickness=0)
         cv.pack()
-        root.geometry(f"{_W}x{_H}+-2000+-2000")
+        root.geometry(f"{_W_MIN}x{_H}+-2000+-2000")
         root.update_idletasks()
         hwnd = int(root.winfo_id())
         hwnd = win32gui.GetParent(hwnd) or hwnd
@@ -143,9 +164,20 @@ class Overlay:
         root.withdraw()
         self._ready.set()
         visible = False
+        # Hintergrund-Pille (zwei Kreise + Rechteck) und Text entstehen einmal. tick() misst den
+        # Text und passt Pille, Canvas und Fenster nur an, wenn sich der Text aendert, nicht in
+        # jedem 50-ms-Takt (24.09.2026). Punkt, Ring und Haken (Tag "symbol") zeichnet es wie
+        # bisher in jedem Takt neu, sie blinken bzw. laufen.
+        schrift = tkfont.Font(root=root, family="Segoe UI", size=9)
+        cv.create_oval(0, 0, _H, _H, fill="#1e1e1e", outline="")
+        pille_rechts = cv.create_oval(_W_MIN - _H, 0, _W_MIN, _H, fill="#1e1e1e", outline="")
+        pille_mitte = cv.create_rectangle(_H // 2, 0, _W_MIN - _H // 2, _H, fill="#1e1e1e", outline="")
+        text_id = cv.create_text(_TEXT_X, _H // 2, text="", anchor="w", fill="white", font=schrift)
+        breite, gemessen = _W_MIN, None     # aktuelle Feldbreite, zuletzt gemessener Text
+        zeiger, monitor = None, None        # Monitor nur neu abfragen, wenn der Zeiger sich bewegt
 
         def tick():
-            nonlocal visible
+            nonlocal visible, breite, gemessen, zeiger, monitor
             with self._lock:
                 state, text, t0, until = self._state, self._text, self._t0, self._until
                 stop_until = self._stop_until
@@ -155,53 +187,61 @@ class Overlay:
             if state == "hidden":
                 if visible:
                     root.withdraw(); visible = False
+                zeiger = None               # beim naechsten Erscheinen den Monitor frisch abfragen
                 root.after(80, tick)
                 return
-            try:
-                x, y = win32api.GetCursorPos()
-            except Exception:  # noqa: BLE001
-                x, y = 0, 0
-            root.geometry(f"{_W}x{_H}+{x + _OFFSET[0]}+{y + _OFFSET[1]}")
-            if not visible:
-                root.deiconify()
-                win32gui.SetWindowPos(hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0,
-                                      win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE)
-                visible = True
-            cv.delete("all")
-            cv.create_rounded = None
-            # Hintergrund-Pille
-            cv.create_oval(0, 0, _H, _H, fill="#1e1e1e", outline="")
-            cv.create_oval(_W - _H, 0, _W, _H, fill="#1e1e1e", outline="")
-            cv.create_rectangle(_H // 2, 0, _W - _H // 2, _H, fill="#1e1e1e", outline="")
+            cv.delete("symbol")
             cx, cy, r = 15, 15, 9
             if state == "recording":
                 blink = int(time.time() * 2) % 2 == 0
-                cv.create_oval(cx - r, cy - r, cx + r, cy + r, fill="#e03c3c" if blink else "#7a2020", outline="")
+                cv.create_oval(cx - r, cy - r, cx + r, cy + r, fill="#e03c3c" if blink else "#7a2020", outline="",
+                               tags="symbol")
                 s = int(time.time() - t0)
                 label = f"{i18n.t('badge_recording')} {s // 60}:{s % 60:02d}"
             elif state == "processing" and time.time() < stop_until:
                 # Die ersten Zehntel nach dem Loslassen: grosses graues Quadrat = „aus", kein Rot,
                 # kein Ring. Das ist die Antwort auf „damit ich weiss, es nimmt nicht mehr auf".
-                cv.create_rectangle(cx - 6, cy - 6, cx + 6, cy + 6, fill="#9a9a9a", outline="")
+                cv.create_rectangle(cx - 6, cy - 6, cx + 6, cy + 6, fill="#9a9a9a", outline="", tags="symbol")
                 label = i18n.t("badge_stopped")
             elif state == "processing":
-                cv.create_oval(cx - r, cy - r, cx + r, cy + r, outline="#555555", width=3)
+                cv.create_oval(cx - r, cy - r, cx + r, cy + r, outline="#555555", width=3, tags="symbol")
                 cv.create_arc(cx - r, cy - r, cx + r, cy + r, start=90, extent=-360 * pct / 100,
-                              style="arc", outline="#4da3ff", width=3)
+                              style="arc", outline="#4da3ff", width=3, tags="symbol")
                 label = f"{int(pct)} %  {text}"
             elif state == "done":
-                cv.create_oval(cx - r, cy - r, cx + r, cy + r, fill="#3cb44b", outline="")
-                cv.create_line(cx - 5, cy, cx - 1, cy + 4, cx + 6, cy - 5, fill="white", width=2)
+                cv.create_oval(cx - r, cy - r, cx + r, cy + r, fill="#3cb44b", outline="", tags="symbol")
+                cv.create_line(cx - 5, cy, cx - 1, cy + 4, cx + 6, cy - 5, fill="white", width=2, tags="symbol")
                 label = text
             elif state == "notice":
-                cv.create_oval(cx - r, cy - r, cx + r, cy + r, fill="#4da3ff", outline="")
-                cv.create_rectangle(cx - 4, cy - 3, cx + 4, cy + 4, outline="white", width=2)
+                cv.create_oval(cx - r, cy - r, cx + r, cy + r, fill="#4da3ff", outline="", tags="symbol")
+                cv.create_rectangle(cx - 4, cy - 3, cx + 4, cy + 4, outline="white", width=2, tags="symbol")
                 label = text
             else:  # error
-                cv.create_oval(cx - r, cy - r, cx + r, cy + r, fill="#e03c3c", outline="")
-                cv.create_text(cx, cy, text="!", fill="white", font=("Segoe UI", 10, "bold"))
+                cv.create_oval(cx - r, cy - r, cx + r, cy + r, fill="#e03c3c", outline="", tags="symbol")
+                cv.create_text(cx, cy, text="!", fill="white", font=("Segoe UI", 10, "bold"), tags="symbol")
                 label = text
-            cv.create_text(32, _H // 2, text=label, anchor="w", fill="white", font=("Segoe UI", 9))
+            if label != gemessen:
+                gemessen = label
+                anzeige, neu = fit_label(label, schrift.measure)
+                cv.itemconfigure(text_id, text=anzeige)
+                if neu != breite:
+                    breite = neu
+                    cv.configure(width=breite)
+                    cv.coords(pille_rechts, breite - _H, 0, breite, _H)
+                    cv.coords(pille_mitte, _H // 2, 0, breite - _H // 2, _H)
+            try:
+                x, y = win32api.GetCursorPos()
+            except Exception:  # noqa: BLE001
+                x, y = 0, 0
+            if (x, y) != zeiger:
+                zeiger, monitor = (x, y), _monitor_under_pointer()
+            links, oben = badge_position(x, y, breite, monitor)
+            root.geometry(f"{breite}x{_H}+{links}+{oben}")
+            if not visible:
+                root.deiconify()
+                win32gui.SetWindowPos(hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0,
+                                      win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE)
+                visible = True
             root.after(50, tick)
 
         root.after(50, tick)
@@ -218,3 +258,51 @@ def estimate_seconds(tail_audio_s: float, pending_stream_s: float = 0.0) -> floa
     # deshalb stand der Ring gefuehlt still.
     je_sekunde = 0.10
     return 0.70 + tail_audio_s * je_sekunde + pending_stream_s * je_sekunde
+
+
+# ---- Groesse und Lage des Felds: reine Rechnung ohne Tk (tests/test_overlay.py) ----
+def badge_width(text_px: int) -> int:
+    """Feldbreite fuer einen Text von text_px Pixeln: waechst mit, von _W_MIN bis _W_MAX."""
+    return max(_W_MIN, min(_W_MAX, _TEXT_X + text_px + _TEXT_RAND))
+
+
+def fit_label(label: str, measure: Callable[[str], int]) -> tuple[str, int]:
+    """(angezeigter Text, Feldbreite). measure(text) = Pixelbreite in der Schrift des Felds, im
+    Overlay tkinter.font.Font.measure. Passt der Text selbst bei _W_MAX nicht, wird er so weit
+    gekuerzt, dass er samt „…" hineinpasst, statt am Feldrand hart abgeschnitten zu werden."""
+    platz = _W_MAX - _TEXT_X - _TEXT_RAND
+    text_px = measure(label)
+    if text_px > platz:
+        # Laengster Anfang, der mit „…" noch passt. Binaersuche: wenige Messungen je Kuerzung.
+        passt, zu_lang = 0, len(label)
+        while zu_lang - passt > 1:
+            mitte = (passt + zu_lang) // 2
+            if measure(label[:mitte].rstrip() + "…") <= platz:
+                passt = mitte
+            else:
+                zu_lang = mitte
+        label = label[:passt].rstrip() + "…"
+        text_px = measure(label)
+    return label, badge_width(text_px)
+
+
+def badge_position(x: int, y: int, width: int,
+                   monitor: tuple[int, int, int, int] | None) -> tuple[int, int]:
+    """Linke obere Ecke des Felds fuer den Mauszeiger bei (x, y). Wie bisher rechts unterhalb
+    des Zeigers; ragte das Feld dort ueber den rechten Rand des Monitors unter dem Zeiger
+    (links, oben, rechts, unten), steht es links vom Zeiger, auf einem sehr schmalen Monitor
+    buendig am linken Rand. monitor None (Abfrage gescheitert): wie bisher rechts."""
+    links = x + _OFFSET[0]
+    if monitor is not None and links + width > monitor[2]:
+        links = max(monitor[0], x - _OFFSET[0] - width)
+    return links, y + _OFFSET[1]
+
+
+def _monitor_under_pointer() -> tuple[int, int, int, int] | None:
+    """Grenzen des Monitors unter dem Mauszeiger, dieselbe Abfrage wie beim Vollbild-Ausschnitt
+    (wf/snip.py). Jeder Fehler ergibt None, das Feld steht dann wie bisher rechts vom Zeiger."""
+    try:
+        from wf import snip
+        return snip.monitor_rect()
+    except Exception:  # noqa: BLE001
+        return None

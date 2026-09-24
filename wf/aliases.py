@@ -38,19 +38,21 @@ def load_aliases(path: Path) -> list[tuple[str, str]]:
 class AliasFixer:
     def __init__(self, pairs: list[tuple[str, str]]):
         self.pairs = pairs
-        self._rx: list[tuple[re.Pattern[str], str]] = []
+        self._rx: list[tuple[re.Pattern[str], str, str]] = []
         for variant, target in pairs:
             # Wortgrenze ohne \b-Probleme bei Umlauten: Lookarounds auf Buchstaben/Ziffern
             pat = re.compile(r"(?<![\wäöüÄÖÜß])" + re.escape(variant) + r"(?![\wäöüÄÖÜß])", re.IGNORECASE)
-            self._rx.append((pat, target))
+            self._rx.append((pat, variant, target))
 
     def fix(self, text: str) -> tuple[str, list[str]]:
         """-> (korrigierter Text, Liste der angewandten Ersetzungen 'Variante->Ziel')."""
         applied: list[str] = []
-        for pat, target in self._rx:
-            new, n = pat.subn(target, text)
+        for pat, variant, target in self._rx:
+            # Ersatz per Funktion, nicht als Text (24.09.2026): als Text liest re ein Ziel wie
+            # "C:\Temp" als Ersetzungsmuster und wirft re.error (bad escape \T).
+            new, n = pat.subn(lambda _m, t=target: t, text)
             if n:
-                applied.append(f"{pat.pattern}->{target}")
+                applied.append(f"{variant}->{target}")   # lesbar fuer die Konsole, nicht das Regex-Muster
                 text = new
         return text, applied
 

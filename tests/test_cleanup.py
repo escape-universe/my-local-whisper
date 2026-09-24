@@ -126,16 +126,25 @@ def test_think_block_wird_entfernt():
     ('"Hallo Welt"', "Hallo Welt"),
     ('  "Hallo Welt"  ', "Hallo Welt"),
     ("Hallo Welt.", "Hallo Welt."),
+    ("„Hallo Welt.“", "Hallo Welt."),              # deutsche Anfuehrungszeichen
+    ("“Hello world.”", "Hello world."),            # englische
+    ('"', ""), ('""', ""), (' " "" ', ""),         # nur Anfuehrungszeichen: leer -> Rohtext-Rueckfall
 ])
 def test_extract(roh, erwartet):
     assert cleanup._extract(roh) == erwartet
 
 
-@pytest.mark.xfail(strict=True, reason="Fehler in wf/cleanup.py:86: strip('\"') entfernt auch ein "
-                   "Anfuehrungszeichen, das zum Satz gehoert: 'Er sagte \"Hallo\"' -> 'Er sagte \"Hallo'. "
-                   "Erwartet: nur umschliessende Anfuehrungszeichen entfernen.")
-@pytest.mark.parametrize("satz", ['Er sagte "Hallo"', '"Nextcloud" ist der Name'])
+@pytest.mark.parametrize("satz", [
+    'Er sagte "Hallo"',
+    '"Nextcloud" ist der Name',
+    '"Hallo" und "Tschüss"',                         # vorne und hinten, aber zwei Paare
+    '„Ja“, sagte er, „gern“',
+    '"Er sagte „Hallo“."',                          # innen weitere: im Zweifel stehen lassen
+])
 def test_extract_laesst_anfuehrungszeichen_im_satz_stehen(satz):
+    """Bis 24.09.2026 nahm strip('"') auch Anfuehrungszeichen, die zum Satz gehoeren
+    ('Er sagte "Hallo"' -> 'Er sagte "Hallo'). Entfernt wird nur ein Paar, das die GANZE
+    Antwort umschliesst und innen keine weiteren Anfuehrungszeichen hat."""
     assert cleanup._extract(satz) == satz
 
 
@@ -228,12 +237,28 @@ def test_ausgelieferte_config_trennt_uebersetzungs_und_cleanup_modell():
     assert c.translate_model and c.translate_model != c.model
 
 
-@pytest.mark.xfail(strict=True, reason="Fehler in wf/cleanup.py:164 (und :176): 'keep_alive or "
-                   "self.keep_alive' ersetzt translate_keep_alive: 0 (sofort entladen) durch das "
-                   "keep_alive des Cleanup-Modells (z. B. -1 = nie entladen).")
-def test_translate_keep_alive_null_wird_uebernommen():
-    c = cleanup.Cleaner({"llm": {**OLLAMA["llm"], "keep_alive": -1, "translate_keep_alive": 0}}, [])
+@pytest.mark.parametrize("cfg", [OLLAMA, LLAMA_SERVER], ids=["nativ", "openai"])
+def test_translate_keep_alive_null_wird_uebernommen(cfg):
+    """translate_keep_alive: 0 = Uebersetzungsmodell sofort entladen. Bis 24.09.2026 machte
+    `keep_alive or self.keep_alive` daraus das keep_alive des Cleanup-Modells (-1 = nie)."""
+    c = cleanup.Cleaner({"llm": {**cfg["llm"], "keep_alive": -1, "translate_keep_alive": 0}}, [])
     assert c._payload([], 10, c.translate_model, c.translate_keep_alive)["keep_alive"] == 0
+
+
+@pytest.mark.parametrize("cfg", [OLLAMA, LLAMA_SERVER], ids=["nativ", "openai"])
+@pytest.mark.parametrize("nicht_gesetzt", [None, ""])
+def test_nicht_gesetztes_keep_alive_gilt_wie_beim_cleanup_modell(cfg, nicht_gesetzt):
+    c = cleanup.Cleaner({"llm": {**cfg["llm"], "keep_alive": -1, "translate_keep_alive": nicht_gesetzt}}, [])
+    assert c._payload([], 10, c.translate_model, c.translate_keep_alive)["keep_alive"] == -1
+    assert c._payload([], 10)["keep_alive"] == -1
+
+
+def test_uebersetzung_schickt_keep_alive_null_an_ollama(monkeypatch):
+    """Der ganze Weg translate() -> _ask() -> _payload(), nicht nur _payload() allein."""
+    c = cleanup.Cleaner({"llm": {**OLLAMA["llm"], "keep_alive": -1, "translate_keep_alive": 0}}, [])
+    aufrufe = _post_liefert(monkeypatch, c, _nativ("Ciao mondo."))
+    assert c.translate("Hallo Welt.", "it") == ("Ciao mondo.", True)
+    assert aufrufe[0]["json"]["keep_alive"] == 0
 
 
 def test_parse_nativ_und_openai():
