@@ -30,6 +30,20 @@ def _icon_image(state: str, toggle: bool = False) -> Image.Image:
     return img
 
 
+#: state (siehe _COLORS) -> Schluessel in wf/i18n.py. Der Zustand selbst ist nur ein internes
+#: Wort; was der Nutzer im Tooltip sieht, kommt wie jeder andere sichtbare Text aus i18n (24.09.2026:
+#: vorher stand da das englische Wort selbst, auch in der deutschen Oberflaeche).
+_STATE_KEY = {state: f"tooltip_state_{state}" for state in _COLORS}
+
+
+def _tooltip_title(state: str, toggle_mode: bool, translate_to: str, detail: str = "") -> str:
+    """Baut den Tooltip-Text. Reine Funktion (kein Icon noetig), damit sie sich ohne Tray testen laesst."""
+    zustand = i18n.t(_STATE_KEY.get(state, state))
+    mode = (" · " + i18n.t("tooltip_toggle_mode")) if toggle_mode else ""
+    tr = (" · → " + lang_mod.name_native(translate_to)) if translate_to else ""
+    return f"my-local-whisper - {zustand}{mode}{tr}" + (f" · {detail}" if detail else "")
+
+
 class Tray:
     def __init__(self, on_toggle_enabled: Callable[[bool], None], on_quit: Callable[[], None],
                  on_toggle_mode: Callable[[bool], None] | None = None,
@@ -124,6 +138,9 @@ class Tray:
                 self._icon.update_menu()
             except Exception:  # noqa: BLE001
                 pass
+            # Nachbesserung 24.09.2026: ohne das blieb der Tooltip in der alten Sprache stehen,
+            # bis der naechste Zustandswechsel (Aufnahme, Pause, ...) ihn neu aufbaute.
+            self.set_state(self._state)
         return _click
 
     def _make_lang_click(self, code: str):
@@ -146,10 +163,7 @@ class Tray:
         self._state = state
         try:
             self._icon.icon = _icon_image(state, self._toggle_mode)
-            mode = (" · " + i18n.t("tooltip_toggle_mode")) if self._toggle_mode else ""
-            tr = (" · → " + lang_mod.name_native(self._translate_to)) if self._translate_to else ""
-            self._icon.title = (f"whisperflow-local — {state}{mode}{tr}"
-                                + (f" · {detail}" if detail else ""))
+            self._icon.title = _tooltip_title(state, self._toggle_mode, self._translate_to, detail)
         except Exception:  # noqa: BLE001
             pass
 
