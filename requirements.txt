@@ -4,6 +4,13 @@ numpy>=1.26
 pynput>=1.7.7
 pystray>=0.19
 Pillow>=10.0
-pywin32>=306
+pywin32>=306; sys_platform == "win32"
+# Windows UI Automation (wf/focus.py): entscheidet im Hybrid-Modus, ob gerade ein Textfeld den
+# Fokus hat. Fehlt es, faengt editable_focus() den ImportError ab und meldet immer "kein
+# Textfeld" -> im Standardmodus "hybrid" wird dann NIE automatisch eingefuegt, still und ohne
+# Fehlermeldung (Befund Arbeitspaket 4, 24.09.2026).
+uiautomation>=2.0.20; sys_platform == "win32"
+# Schnellerer Prozessname in wf/context.py (sonst ctypes-Fallback, funktioniert auch ohne).
+psutil>=5.9
 requests>=2.31
 PyYAML>=6.0

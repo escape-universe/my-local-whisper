@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 import whisperflow as W
+from wf import cleanup as cleanup_mod
 from wf import i18n, overlay
 
 # --- Pipeline.append_decision (Entscheidung 08.09.2026) ----------------------------------------
@@ -154,6 +155,82 @@ def test_leeres_transkript_und_verworfen(pipeline):
     assert pipeline.process_audio(STILLE, do_inject=False, ctx=CTX)["note"] == "leeres Transkript"
     res = pipeline.process_audio(STILLE, do_inject=False, ctx=CTX, is_cancelled=lambda: True)
     assert res["note"].startswith("verworfen") and "cleaned" not in res
+
+
+# --- App._llm_startup_notice(): Konsole + Tray-Text je Diagnose-Status (Arbeitspaket 4) ---------
+def _app_mit_diagnose(status: str, detail: str, model: str = "qwen2.5:3b-instruct",
+                      enabled: bool = True, native: bool = True) -> tuple[W.App, list]:
+    aufrufe: list = []
+    cleaner = types.SimpleNamespace(
+        diagnose=lambda: (aufrufe.append(1), (status, detail))[1], model=model, enabled=enabled,
+        native=native)
+    return _app(pipeline=types.SimpleNamespace(cleaner=cleaner)), aufrufe
+
+
+def test_llm_startup_notice_ok_ist_still(capsys):
+    app, _ = _app_mit_diagnose(cleanup_mod.Cleaner.DIAG_OK, "model qwen2.5:3b-instruct is loaded")
+    assert app._llm_startup_notice(llm_reachable=False) == ""
+    assert capsys.readouterr().out == ""
+
+
+def test_llm_startup_notice_unbekannt_ist_still(capsys):
+    """Kriterium: "unbekannt" behauptet nichts - keine Konsolenzeile, keine Tray-Meldung."""
+    app, _ = _app_mit_diagnose(cleanup_mod.Cleaner.DIAG_UNKNOWN, "endpoint has no /models list")
+    assert app._llm_startup_notice(llm_reachable=False) == ""
+    assert capsys.readouterr().out == ""
+
+
+def test_llm_startup_notice_nicht_erreichbar(monkeypatch, capsys):
+    monkeypatch.setattr(i18n, "_current", "en")
+    app, _ = _app_mit_diagnose(cleanup_mod.Cleaner.DIAG_UNREACHABLE, "Ollama not reachable at http://x")
+    hinweis = app._llm_startup_notice(llm_reachable=False)
+    assert "WARN" in capsys.readouterr().out
+    assert hinweis == i18n.t("note_llm_unreachable")
+
+
+def test_llm_startup_notice_modell_fehlt_nennt_die_abhilfe(monkeypatch, capsys):
+    """Konsolenzeile mit Abhilfe (Kriterium, Beispiel "ollama pull qwen2.5:3b-instruct")."""
+    monkeypatch.setattr(i18n, "_current", "en")
+    app, _ = _app_mit_diagnose(cleanup_mod.Cleaner.DIAG_MODEL_MISSING,
+                               "model qwen2.5:3b-instruct is not pulled -> ollama pull qwen2.5:3b-instruct")
+    hinweis = app._llm_startup_notice(llm_reachable=False)
+    assert "ollama pull qwen2.5:3b-instruct" in capsys.readouterr().out
+    assert hinweis == i18n.t("note_llm_model_missing", model="qwen2.5:3b-instruct")
+
+
+def test_llm_startup_notice_modell_fehlt_openai_nennt_nicht_ollama_pull(monkeypatch, capsys):
+    """Nachbesserung Arbeitspaket 4, Runde 1 (B4): 'ollama pull' ist nur bei Ollama selbst eine
+    sinnvolle Abhilfe - ein anderer OpenAI-kompatibler Server (z. B. llama.cpp) braucht einen
+    eigenen Tray-Text (Hinweis des Pruefers: 'pruefe llm.model / den Server')."""
+    monkeypatch.setattr(i18n, "_current", "en")
+    app, _ = _app_mit_diagnose(cleanup_mod.Cleaner.DIAG_MODEL_MISSING,
+                               "model qwen2.5:3b-instruct was not found -> check llm.model or the server",
+                               native=False)
+    hinweis = app._llm_startup_notice(llm_reachable=False)
+    assert "ollama pull" not in capsys.readouterr().out
+    assert hinweis == i18n.t("note_llm_model_missing_other", model="qwen2.5:3b-instruct")
+    assert "ollama" not in hinweis.lower()
+
+
+def test_llm_startup_notice_ueberspringt_diagnose_wenn_warmup_schon_lief(capsys):
+    """Nachbesserung Arbeitspaket 4, Runde 1 (B4): ein erfolgreicher Warm-up (ein echter
+    Chat-Aufruf) beweist schon, dass das Modell nutzbar ist - diagnose() (ein zusaetzlicher
+    HTTP-Aufruf, der bei Single-Model-Servern wie llama.cpp faelschlich 'Modell fehlt' melden
+    kann) laeuft dann gar nicht erst."""
+    app, aufrufe = _app_mit_diagnose(cleanup_mod.Cleaner.DIAG_MODEL_MISSING, "sollte nicht erscheinen")
+    assert app._llm_startup_notice(llm_reachable=True) == ""
+    assert capsys.readouterr().out == ""
+    assert aufrufe == []                             # diagnose() wurde gar nicht erst gerufen
+
+
+def test_llm_startup_notice_uebersprungen_wenn_cleanup_abgeschaltet(capsys):
+    """Nachbesserung Arbeitspaket 4, Runde 1 (B5): llm.enabled: false ist eine bewusste
+    Entscheidung - kein WARN, kein Netzaufruf, auch wenn der Warm-up (folgerichtig) fehlschlug."""
+    app, aufrufe = _app_mit_diagnose(cleanup_mod.Cleaner.DIAG_UNREACHABLE, "sollte nicht erscheinen",
+                                     enabled=False)
+    assert app._llm_startup_notice(llm_reachable=False) == ""
+    assert capsys.readouterr().out == ""
+    assert aufrufe == []
 
 
 # --- Konsole englisch, sichtbarer Produktname (24.09.2026) --------------------------------------

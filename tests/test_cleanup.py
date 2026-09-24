@@ -49,6 +49,22 @@ def _post_liefert(monkeypatch, c: cleanup.Cleaner, *antworten) -> list[dict]:
     return aufrufe
 
 
+def _get_liefert(monkeypatch, c: cleanup.Cleaner, *antworten) -> list[dict]:
+    """Wie _post_liefert, aber fuer c._http.get (diagnose())."""
+    aufrufe: list[dict] = []
+    rest = list(antworten)
+
+    def get(url, timeout=None):
+        aufrufe.append({"url": url, "timeout": timeout})
+        a = rest.pop(0)
+        if isinstance(a, BaseException):
+            raise a
+        return a
+
+    monkeypatch.setattr(c._http, "get", get)
+    return aufrufe
+
+
 # --- build_messages ----------------------------------------------------------------------------
 def test_system_prompt_traegt_die_regeln():
     """Faelle aus selftest.py: Editor-Rolle, Frage bleibt Frage, kein Gedankenstrich, Umlaute."""
@@ -372,3 +388,164 @@ def test_uebersetzung_ohne_ziel_macht_nichts(monkeypatch):
     aufrufe = _post_liefert(monkeypatch, c)
     assert c.translate("Hallo", "") == ("Hallo", False)
     assert aufrufe == []
+
+
+# --- diagnose(): Server nicht erreichbar / Modell fehlt / ok / unbekannt (Arbeitspaket 4) -------
+@pytest.mark.parametrize("konfiguriert, verfuegbar, erwartet", [
+    ("gemma3", "gemma3:latest", True),                             # der reale Ollama-Fall: kein
+    ("gemma3:latest", "gemma3", True),                             # eigener Tag -> ":latest"
+    ("qwen2.5:3b-instruct", "qwen2.5:3b-instruct:latest", True),    # defensiv: ein schon getaggter
+    ("qwen2.5:3b-instruct", "qwen2.5:3b-instruct", True),          # Name sollte real unveraendert
+    ("qwen2.5:3b-instruct", "gemma3:4b", False),                   # gelistet werden (s. _model_matches)
+    ("qwen2.5:3b-instruct", "qwen2.5:3b-instruct:q4_0", False),    # anderer Tag = anderes Modell
+])
+def test_model_matches(konfiguriert, verfuegbar, erwartet):
+    assert cleanup._model_matches(konfiguriert, verfuegbar) is erwartet
+
+
+def test_diagnose_ollama_nicht_erreichbar(monkeypatch):
+    c = cleanup.Cleaner(OLLAMA, [])
+    _get_liefert(monkeypatch, c, requests.ConnectionError("Connection refused"))
+    status, text = c.diagnose()
+    assert status == cleanup.Cleaner.DIAG_UNREACHABLE
+    assert "not reachable" in text
+    assert "ollama.com" in text and "llm.base_url" in text        # Abhilfe (Kriterium, B6)
+
+
+def test_diagnose_ollama_serverfehler_ist_unbekannt_nicht_unerreichbar(monkeypatch):
+    """Hinweis des Pruefers, Nachbesserung Runde 1: HTTP 500 heisst "der Server antwortet mit
+    einem Fehler", nicht "nicht erreichbar" (der Server LAEUFT ja, anders als bei Connection
+    refused)."""
+    c = cleanup.Cleaner(OLLAMA, [])
+    _get_liefert(monkeypatch, c, _Antwort({}, status=500))
+    status, text = c.diagnose()
+    assert status == cleanup.Cleaner.DIAG_UNKNOWN
+    assert "error" in text.lower() and "500" in text
+
+
+def test_diagnose_ollama_modell_fehlt(monkeypatch):
+    """Der irrefuehrende Fall aus dem Befund: Ollama laeuft, das Modell wurde nur nie gezogen."""
+    c = cleanup.Cleaner(OLLAMA, [])   # Default-Modell qwen2.5:3b-instruct
+    aufrufe = _get_liefert(monkeypatch, c, _Antwort({"models": [{"name": "gemma3:4b"}]}))
+    status, text = c.diagnose()
+    assert status == cleanup.Cleaner.DIAG_MODEL_MISSING
+    assert "ollama pull qwen2.5:3b-instruct" in text
+    assert aufrufe[0]["url"] == "http://127.0.0.1:11434/api/tags"
+
+
+def test_diagnose_ollama_modell_ohne_tag_gilt_als_vorhanden_mit_latest(monkeypatch):
+    """Der reale Ollama-Fall (Praezisierung Runde 1): config.yaml nennt keinen Tag ('gemma3'),
+    Ollama listet ihn mit ':latest'."""
+    c = cleanup.Cleaner({"llm": {**OLLAMA["llm"], "model": "gemma3"}}, [])
+    _get_liefert(monkeypatch, c, _Antwort({"models": [{"name": "gemma3:latest"}]}))
+    assert c.diagnose() == (cleanup.Cleaner.DIAG_OK, "model gemma3 is loaded on the Ollama server")
+
+
+def test_diagnose_prueft_ein_anderes_modell_als_self_model(monkeypatch):
+    """diagnose(model) - fuer das Uebersetzungsmodell (wf/doctor.py nutzt das)."""
+    c = cleanup.Cleaner({"llm": {**OLLAMA["llm"], "translate_model": "gemma3:4b"}}, [])
+    _get_liefert(monkeypatch, c, _Antwort({"models": [{"name": "gemma3:4b"}]}))
+    assert c.diagnose(c.translate_model)[0] == cleanup.Cleaner.DIAG_OK
+
+
+def test_diagnose_openai_modell_vorhanden(monkeypatch):
+    c = cleanup.Cleaner(LLAMA_SERVER, [])
+    aufrufe = _get_liefert(monkeypatch, c, _Antwort({"data": [{"id": "qwen2.5:3b-instruct"}]}))
+    assert c.diagnose() == (cleanup.Cleaner.DIAG_OK, "model qwen2.5:3b-instruct is available at http://192.168.1.20:8080/v1")
+    assert aufrufe[0]["url"] == "http://192.168.1.20:8080/v1/models"
+
+
+def test_diagnose_openai_modell_fehlt_wenn_auch_der_chat_aufruf_scheitert(monkeypatch):
+    """Modell fehlt gilt im OpenAI-Modus erst, wenn AUCH ein echter Chat-Aufruf scheitert
+    (Nachbesserung Arbeitspaket 4, Runde 1, B4) - sonst waere ein Single-Model-Server, der das
+    Modell im Namen nicht zeigt, faelschlich 'model_missing'."""
+    c = cleanup.Cleaner(LLAMA_SERVER, [])
+    _get_liefert(monkeypatch, c, _Antwort({"data": [{"id": "gemma3:4b"}]}))
+    _post_liefert(monkeypatch, c, requests.ConnectionError("Connection refused"))   # warmup() faellt auch
+    status, text = c.diagnose()
+    assert status == cleanup.Cleaner.DIAG_MODEL_MISSING
+    assert "check llm.model" in text
+
+
+def test_diagnose_openai_single_model_server_gilt_trotzdem_als_ok(monkeypatch):
+    """Das Befund-Szenario des Pruefers (llama.cpp im Single-Model-Betrieb): /v1/models listet den
+    Datei-/Alias-Namen ('qwen2.5-3b-instruct-q4_k_m.gguf'), nicht den konfigurierten String
+    ('qwen2.5:3b-instruct') - das 'model'-Feld wird beim Chat-Aufruf ignoriert. Ein echter
+    Chat-Aufruf (warmup()) beweist trotzdem, dass das Modell laeuft."""
+    c = cleanup.Cleaner(LLAMA_SERVER, [])
+    _get_liefert(monkeypatch, c, _Antwort({"data": [{"id": "qwen2.5-3b-instruct-q4_k_m.gguf"}]}))
+    _post_liefert(monkeypatch, c, _Antwort({"choices": [{"message": {"content": "Hallo Welt."},
+                                                         "finish_reason": "stop"}]}))
+    status, text = c.diagnose()
+    assert status == cleanup.Cleaner.DIAG_OK
+    assert "single-model" in text.lower()
+
+
+def test_diagnose_openai_chat_probe_nutzt_das_geprueft_modell_nicht_self_model(monkeypatch):
+    """Nachbesserung Arbeitspaket 4, Runde 2 (B8): das Befund-Szenario des Pruefers - ein Server,
+    der Modellnamen wirklich prueft (z. B. vLLM), kennt nur das Aufraeum-Modell und weist einen
+    Chat mit dem Uebersetzungsmodell ab (404). diagnose(translate_model) muss dann MODEL_MISSING
+    melden - lief die Chat-Probe (auf dem alten Stand) mit self.model statt dem gepruefften Namen,
+    haette DIESER Server sie angenommen und faelschlich OK gemeldet. Modellbewusste Post-Attrappe
+    (nicht _post_liefert): der Server antwortet je nach gesendetem Modellnamen unterschiedlich."""
+    c = cleanup.Cleaner({"llm": {**LLAMA_SERVER["llm"], "translate_model": "gemma3:4b"}}, [])
+    _get_liefert(monkeypatch, c, _Antwort({"data": [{"id": "qwen2.5:3b-instruct"}]}))
+    aufrufe: list[dict] = []
+
+    def post(url, json=None, timeout=None):
+        aufrufe.append(json)
+        if json["model"] == "qwen2.5:3b-instruct":   # das einzige Modell, das der Server kennt
+            return _Antwort({"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
+        return _Antwort({}, status=404)
+
+    monkeypatch.setattr(c._http, "post", post)
+    status, text = c.diagnose(c.translate_model)
+    assert status == cleanup.Cleaner.DIAG_MODEL_MISSING
+    assert aufrufe[0]["model"] == "gemma3:4b"    # die Probe lief mit dem GEPRUEFTEN Namen
+
+
+def test_warmup_prueft_ein_anderes_modell_wenn_angegeben(monkeypatch):
+    """warmup(model=...) - Grundlage fuer B8: diagnose() muss das jeweils gepruefte Modell
+    anfragen koennen, nicht immer self.model."""
+    c = cleanup.Cleaner(LLAMA_SERVER, [])
+    aufrufe = _post_liefert(monkeypatch, c, _Antwort({"choices": [{"message": {"content": "ok"},
+                                                                   "finish_reason": "stop"}]}))
+    assert c.warmup("anderes-modell") is True
+    assert aufrufe[0]["json"]["model"] == "anderes-modell"
+
+
+def test_warmup_ohne_angabe_prueft_weiterhin_self_model(monkeypatch):
+    c = cleanup.Cleaner(LLAMA_SERVER, [])
+    aufrufe = _post_liefert(monkeypatch, c, _Antwort({"choices": [{"message": {"content": "ok"},
+                                                                   "finish_reason": "stop"}]}))
+    assert c.warmup() is True
+    assert aufrufe[0]["json"]["model"] == c.model
+
+
+def test_warmup_nativ_prueft_ein_anderes_modell_wenn_angegeben(monkeypatch):
+    c = cleanup.Cleaner(OLLAMA, [])
+    aufrufe = _post_liefert(monkeypatch, c, _nativ("ok"))
+    assert c.warmup("anderes-modell") is True
+    assert aufrufe[0]["json"]["model"] == "anderes-modell"
+
+
+def test_diagnose_openai_nicht_erreichbar(monkeypatch):
+    c = cleanup.Cleaner(LLAMA_SERVER, [])
+    _get_liefert(monkeypatch, c, requests.ConnectionError("Connection refused"))
+    status, text = c.diagnose()
+    assert status == cleanup.Cleaner.DIAG_UNREACHABLE
+    assert "start the server" in text and "llm.base_url" in text   # Abhilfe (Kriterium, B6)
+
+
+def test_diagnose_openai_ohne_modelliste_gibt_unbekannt(monkeypatch):
+    """Nicht jeder OpenAI-kompatible Server hat /models (z. B. manche llama.cpp-Bauarten):
+    dann "unbekannt" statt einer Behauptung ohne Beleg (Kriterium)."""
+    c = cleanup.Cleaner(LLAMA_SERVER, [])
+    _get_liefert(monkeypatch, c, _Antwort({}, status=404))
+    assert c.diagnose()[0] == cleanup.Cleaner.DIAG_UNKNOWN
+
+
+def test_diagnose_openai_kaputte_antwort_gibt_unbekannt(monkeypatch):
+    c = cleanup.Cleaner(LLAMA_SERVER, [])
+    _get_liefert(monkeypatch, c, _Antwort(ValueError("kein JSON")))
+    assert c.diagnose()[0] == cleanup.Cleaner.DIAG_UNKNOWN

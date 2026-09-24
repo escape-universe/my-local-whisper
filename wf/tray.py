@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import threading
-from typing import Callable
+from typing import Any, Callable
 
 from PIL import Image, ImageDraw
 
@@ -173,9 +173,25 @@ class Tray:
         except Exception:  # noqa: BLE001
             print(f"[tray-notify] {title}: {message}")
 
-    def run(self) -> None:
-        """Blocked (must run on the main thread)."""
-        self._icon.run()
+    def run(self, setup: Callable[[Any], None] | None = None) -> None:
+        """Blocked (must run on the main thread). setup wird von pystray in einem eigenen Thread
+        aufgerufen, sobald das Icon eingerichtet ist - der richtige Zeitpunkt fuer eine
+        Tray-Meldung, die schon beim Start feststeht (Arbeitspaket 4: run() selbst blockiert den
+        Hauptthread, das Icon existiert vorher nicht).
+
+        Wichtig (Berichtigung Arbeitspaket 4, Runde 1, B3 - hier stand zuvor faelschlich, das Icon
+        sei zu diesem Zeitpunkt schon sichtbar): ein EIGENER setup-Callback ersetzt pystrays
+        Standardverhalten VOLLSTAENDIG. Ohne eigenen setup setzt pystray selbst icon.visible =
+        True; MIT eigenem setup ist das allein unsere Aufgabe (pystray-Doku: "If you specify a
+        custom setup function, you must explicitly set this attribute."). Deshalb setzt run()
+        HIER selbst icon.visible = True, bevor es den mitgegebenen setup aufruft - ohne das waere
+        das Icon nie erschienen, sobald es beim Start etwas zu melden gibt (genau der Neu-Nutzer-
+        Fall: Ollama laeuft nicht oder das Modell fehlt)."""
+        def _start(icon: Any) -> None:
+            icon.visible = True
+            if setup:
+                setup(icon)
+        self._icon.run(setup=_start)
 
     def run_detached(self) -> None:
         threading.Thread(target=self._icon.run, daemon=True).start()

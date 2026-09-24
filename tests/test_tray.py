@@ -65,6 +65,45 @@ def test_set_state_benutzt_dieselbe_funktion(attrappen, monkeypatch):
     assert "whisperflow-local" not in t._icon.title
 
 
+def test_run_gibt_setup_an_pystray_weiter(attrappen, monkeypatch):
+    """Arbeitspaket 4: die Start-Meldung ("Aufraeum-Modell nicht erreichbar") darf erst kommen,
+    wenn das Icon wirklich im Tray sichtbar ist - das ist pystrays setup-Callback (in echtem
+    pystray in einem eigenen Thread aufgerufen), nicht ein fest verdrahtetes sleep()."""
+    if "pystray" not in attrappen:
+        pytest.skip("echtes pystray installiert")
+    monkeypatch.setattr(i18n, "_current", "en")
+    t = tray.Tray(lambda on: None, lambda: None)
+    aufgerufen = []
+    t.run(setup=lambda icon: aufgerufen.append(icon))
+    assert aufgerufen == [t._icon]
+    assert t._icon.running                          # run() selbst lief trotzdem normal durch
+
+
+def test_eigener_setup_laesst_das_icon_trotzdem_sichtbar_werden(attrappen):
+    """Nachbesserung Arbeitspaket 4, Runde 1 (B3): ein EIGENER setup-Callback ersetzt pystrays
+    Standardweg komplett - der setzt sonst icon.visible = True. Ohne das Nachholen in Tray.run()
+    waere das Tray-Symbol nie erschienen, sobald es beim Start etwas zu melden gibt (genau der
+    Neu-Nutzer-Fall: Ollama laeuft nicht). Belegt durch die pystray-Attrappe, die visible wie das
+    echte pystray nur im Standardweg (kein eigener setup) automatisch setzt."""
+    if "pystray" not in attrappen:
+        pytest.skip("echtes pystray installiert")
+    t = tray.Tray(lambda on: None, lambda: None)
+    assert t._icon.visible is False                 # vor run(): wie im echten pystray
+    aufgerufen = []
+    t.run(setup=lambda icon: aufgerufen.append(icon.visible))   # visible schon True, WENN setup laeuft
+    assert t._icon.visible is True
+    assert aufgerufen == [True]
+
+
+def test_run_ohne_setup_bleibt_wie_bisher(attrappen):
+    if "pystray" not in attrappen:
+        pytest.skip("echtes pystray installiert")
+    t = tray.Tray(lambda on: None, lambda: None)
+    t.run()
+    assert t._icon.running
+    assert t._icon.visible is True
+
+
 def test_sprachwechsel_aktualisiert_den_tooltip_sofort(attrappen, monkeypatch):
     """Nachbesserung 24.09.2026: _make_ui_lang_click rief nur update_menu() auf, der Tooltip blieb
     bis zum naechsten Zustandswechsel in der alten Sprache stehen. on_set_ui_language hier wie in

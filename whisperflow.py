@@ -12,13 +12,26 @@ Aufruf:
     py whisperflow.py --transcribe-file X.wav   # Datei durch STT+Cleanup (Test, kein Inject)
     py whisperflow.py --clean-text "..."  # nur Cleanup-Stufe testen
     py whisperflow.py --selftest          # deterministische Selbsttests (Inject-Roundtrip etc.)
+    py whisperflow.py --doctor            # Einrichtung pruefen: Pakete, Mikrofon, GPU, Ollama
     py whisperflow.py --no-tray           # ohne Tray (Konsole)
 """
 from __future__ import annotations
 
+import sys
+
+# --doctor prueft unter anderem, ob numpy/sounddevice/pynput/requests/yaml fehlen (wf/doctor.py) -
+# es darf deshalb nicht selbst an ihrem Fehlen scheitern. Deshalb VOR den schweren Importen unten
+# abgefangen, noch vor "import numpy" und den wf.*-Importen (Nachbesserung Arbeitspaket 4, Runde 1,
+# B1): fehlt eines davon, soll --doctor das als [FAIL]-Zeile melden, nicht mit einem Traceback
+# abbrechen, bevor es ueberhaupt anfangen konnte. wf.doctor selbst importiert am eigenen Kopf nur
+# die Standardbibliothek (siehe dort). __name__ == "__main__": ein `import whisperflow` (Tests)
+# loest das nicht aus.
+if __name__ == "__main__" and "--doctor" in sys.argv[1:]:
+    from wf.doctor import run_doctor
+    sys.exit(run_doctor())
+
 import argparse
 import json
-import sys
 import threading
 import time
 from datetime import datetime, timedelta
@@ -812,13 +825,43 @@ class App:
     def _quit(self) -> None:
         self._stop.set()
 
+    def _llm_startup_notice(self, llm_reachable: bool) -> str:
+        """Diagnose des Aufraeum-Modells beim Start (Arbeitspaket 4): eine klare Konsolenzeile mit
+        Abhilfe fuer den, der eine Konsole sieht. Rueckgabe: Tray-Meldungstext fuer den, der keine
+        hat ("" wenn alles ok ist oder sich nichts Sicheres behaupten laesst - Kriterium "unbekannt"
+        statt falscher Behauptung, siehe Cleaner.diagnose).
+
+        Nachbesserung Arbeitspaket 4, Runde 1: zwei Kurzschluesse, BEVOR diagnose() (ein weiterer
+        HTTP-Aufruf) ueberhaupt laeuft.
+        B5: llm.enabled: false ist eine bewusste Entscheidung, kein Problem - kein Netzaufruf.
+        B4: hat der Warm-up eben schon erfolgreich einen echten Chat-Aufruf gemacht, beweist das
+        bereits, dass das konfigurierte Modell nutzbar ist - ein Single-Model-Server (z. B.
+        llama.cpp) listet sein Modell unter /v1/models oft unter einem anderen Namen (Datei-/
+        Alias-Name, das 'model'-Feld wird dort ignoriert), diagnose() haette das faelschlich als
+        "Modell fehlt" gemeldet."""
+        cleaner = self.pipeline.cleaner
+        if not cleaner.enabled or llm_reachable:
+            return ""
+        status, detail = cleaner.diagnose()
+        if status == cleanup_mod.Cleaner.DIAG_UNREACHABLE:
+            print(f"[app] WARN: clean-up LLM not reachable ({detail}) -> raw transcript is "
+                  f"delivered until it runs.")
+            return i18n.t("note_llm_unreachable")
+        if status == cleanup_mod.Cleaner.DIAG_MODEL_MISSING:
+            print(f"[app] WARN: {detail}")
+            # "ollama pull" ist nur bei Ollama selbst eine sinnvolle Abhilfe - ein anderer
+            # OpenAI-kompatibler Server (z. B. llama.cpp) braucht einen eigenen Text (Nachbesserung
+            # Arbeitspaket 4, Runde 1, B4).
+            key = "note_llm_model_missing" if cleaner.native else "note_llm_model_missing_other"
+            return i18n.t(key, model=cleaner.model)
+        return ""
+
     def run(self) -> None:
         print("[app] warming up ...")
         self.pipeline.overlay.start()
         w = self.pipeline.warmup()
         print(f"[app] warm-up done in {w['warmup_s']}s. LLM reachable: {w['llm_reachable']}")
-        if not w["llm_reachable"]:
-            print("[app] WARN: clean-up LLM not reachable -> raw transcript is delivered until Ollama runs.")
+        llm_notice = self._llm_startup_notice(bool(w["llm_reachable"]))
 
         if self._recorder.open():
             print(f"[app] microphone stream open (pre-roll {self._recorder.preroll_frames / self._recorder.samplerate:.1f} s) -> recording starts the instant you press.")
@@ -857,8 +900,12 @@ class App:
                              on_open_images=self._open_images)
             self.pipeline.tray = self.tray
             self.tray.set_state("idle")
-            # pystray.run() blockiert im Main-Thread; Hotkey-Listener laeuft eh separat
-            self.tray.run()
+            # pystray.run() blockiert im Main-Thread; Hotkey-Listener laeuft eh separat. Tray.run()
+            # sorgt selbst dafuer, dass das Icon sichtbar ist, BEVOR dieser setup laeuft (sonst
+            # bliebe es unsichtbar - ein eigener setup ersetzt pystrays Standardweg komplett, siehe
+            # wf/tray.py, Nachbesserung Arbeitspaket 4 Runde 1, B3).
+            setup = (lambda icon: self.tray.notify(llm_notice)) if llm_notice else None
+            self.tray.run(setup=setup)
             hk.stop()
             if self._snip_watcher:
                 self._snip_watcher.stop()
@@ -973,6 +1020,7 @@ def main() -> int:
     ap.add_argument("--transcribe-file", metavar="WAV")
     ap.add_argument("--clean-text", metavar="TEXT")
     ap.add_argument("--selftest", action="store_true")
+    ap.add_argument("--doctor", action="store_true", help="check the setup: packages, microphone, GPU, Ollama")
     ap.add_argument("--calibrate", action="store_true", help="Begriffe vorlesen, Hoer-Fehler als Alias uebernehmen")
     ap.add_argument("--nur", default="", metavar="ABSCHNITT",
                     help="calibrate only one section of dictionary.txt, e.g. --nur english")
@@ -985,6 +1033,12 @@ def main() -> int:
     if args.selftest:
         from selftest import run_selftests
         return run_selftests()
+    if args.doctor:
+        # Regulaerer Aufruf faengt "--doctor" schon vor den schweren Importen am Dateikopf ab
+        # (B1) - hier nur noch als Rueckfallweg, falls main() direkt aufgerufen wird (Test), und
+        # vor load_config(): darf auch laufen, wenn config.yaml selbst das Problem ist.
+        from wf.doctor import run_doctor
+        return run_doctor()
 
     cfg = config_mod.load_config()
 

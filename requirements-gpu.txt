@@ -1,0 +1,10 @@
+# Optional: nur noetig, wenn stt.device (config.yaml) "auto" oder "cuda" auf einer NVIDIA-Karte
+# laufen soll UND CUDA/cuDNN nicht schon systemweit installiert sind (z. B. ueber den
+# NVIDIA-Treiber/eine CUDA-Toolkit-Installation). faster-whisper>=1.1 bringt CTranslate2 4.x mit;
+# seit CTranslate2 4.5 braucht das cuBLAS 12 und cuDNN 9 (aeltere CTranslate2-Bauarten cuDNN 8).
+# Ohne diese Bibliotheken faellt stt.device: auto korrekt auf die CPU zurueck (wf/stt.py,
+# Arbeitspaket 4) - mit dieser Datei bekommt man stattdessen die GPU-Beschleunigung.
+#
+# Installation:  py -m pip install -r requirements-gpu.txt
+nvidia-cublas-cu12
+nvidia-cudnn-cu12>=9,<10

@@ -290,11 +290,19 @@ def _pystray() -> dict[str, types.ModuleType]:
             self.notifications: list[tuple[str, str | None]] = []
             self.menu_updates = 0
             self.running = False
+            self.visible = False       # wie im echten pystray vor run() (Nachbesserung AP4, B3)
 
         def run(self, setup=None):
             self.running = True
             if setup:
+                # Ein EIGENER setup-Callback ersetzt pystrays Standardverhalten komplett - er
+                # muss visible selbst setzen (echtes pystray, _base.py _start_setup). Nachbesserung
+                # Arbeitspaket 4, B3: wf/tray.py Tray.run() tut das jetzt immer, bevor es einen
+                # mitgegebenen setup aufruft; diese Attrappe darf das NICHT von sich aus tun,
+                # sonst waere genau der Fehler, den B3 fand, hier nie aufgefallen.
                 setup(self)
+            else:
+                self.visible = True    # nur der Standardweg (kein eigener setup) setzt es automatisch
 
         def stop(self):
             self.running = False

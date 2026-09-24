@@ -135,6 +135,18 @@ def build_translate_messages(text: str, dictionary: list[str], target: str) -> l
     return [{"role": "system", "content": system}, {"role": "user", "content": text}]
 
 
+def _model_matches(configured: str, available: str) -> bool:
+    """Ollama haengt ':latest' nur an einen Namen OHNE eigenen Tag an ('gemma3' -> 'gemma3:latest'
+    in GET /api/tags) - einen Namen, der schon einen Tag hat ('qwen2.5:3b-instruct'), listet es
+    unveraendert (Praezisierung Arbeitspaket 4, Nachbesserung Runde 1: der Kommentar hier behauptete
+    zuvor faelschlich, das Suffix wuerde AUCH an einen schon getaggten Namen angehaengt).
+    Die Pruefung bleibt trotzdem symmetrisch und toleriert beide Richtungen: das kostet nichts und
+    faengt auch eine abweichende Ollama-Version ab, die es doch anders handhabt."""
+    if configured == available:
+        return True
+    return available == configured + ":latest" or configured == available + ":latest"
+
+
 class Cleaner:
     def __init__(self, cfg: dict[str, Any], dictionary: list[str]):
         llm = cfg.get("llm", {})
@@ -154,6 +166,7 @@ class Cleaner:
         # llm.api: "auto" (Default: nativ, wenn Port 11434) | "ollama" | "openai" (z.B. llama-server).
         api = str(llm.get("api", "auto")).lower()
         self.native = api == "ollama" or (api == "auto" and ":11434" in base)
+        self.base_url = base   # fuer diagnose(): OpenAI-kompatible Modell-Liste liegt unter {base}/models
         if self.native:
             self.url = base[: base.rfind("/v1")] + "/api/chat" if base.endswith("/v1") else base + "/api/chat"
         # Eine Session = TCP-Verbindung bleibt offen (Keep-Alive), kein Proxy-Lookup pro Anfrage.
@@ -206,19 +219,97 @@ class Cleaner:
         ch = data["choices"][0]
         return str(ch["message"]["content"]), str(ch.get("finish_reason") or "")
 
-    def warmup(self) -> bool:
+    def warmup(self, model: str = "") -> bool:
         """Modell laden/warmhalten (R6). True wenn erreichbar.
-        Nativ: leere Nachrichtenliste laedt das Modell nur (kein Token erzeugt, keep_alive greift)."""
+        Nativ: leere Nachrichtenliste laedt das Modell nur (kein Token erzeugt, keep_alive greift).
+        model = "" prueft self.model; ein anderer Name (z. B. beim Diagnostizieren eines anderen
+        Modells als self.model) laesst sich mitpruefen (Nachbesserung Arbeitspaket 4, Runde 2, B8:
+        _diagnose_openai() muss das TATSAECHLICH gepruefte Modell anfragen, nicht immer
+        self.model, sonst meldet ein Server, der Modellnamen prueft, faelschlich OK)."""
+        name = model or self.model
         try:
             if self.native:
-                r = self._http.post(self.url, json={"model": self.model, "messages": [], "keep_alive": self.keep_alive},
+                r = self._http.post(self.url, json={"model": name, "messages": [], "keep_alive": self.keep_alive},
                                     timeout=self.timeout)
             else:
                 r = self._http.post(self.url, json=self._payload(
-                    [{"role": "user", "content": "ok"}], 1), timeout=self.timeout)
+                    [{"role": "user", "content": "ok"}], 1, model=name), timeout=self.timeout)
             return r.ok
         except requests.RequestException:
             return False
+
+    # Status-Codes von diagnose() (Arbeitspaket 4, Punkt 3): warmup() sagt nur erreichbar/nicht,
+    # das reicht nicht - laeuft Ollama, aber das Modell wurde nie gezogen, antwortet /api/chat mit
+    # 404 und warmup() meldet trotzdem "nicht erreichbar", was in die falsche Richtung weist.
+    DIAG_OK = "ok"
+    DIAG_UNREACHABLE = "unreachable"
+    DIAG_MODEL_MISSING = "model_missing"
+    DIAG_UNKNOWN = "unknown"
+
+    def diagnose(self, model: str = "") -> tuple[str, str]:
+        """(status, text). Unterscheidet: Server nicht erreichbar / Modell fehlt / ok - fuer ein
+        OpenAI-kompatibles Ziel ohne Modell-Liste "unbekannt" statt einer Behauptung ohne Beleg.
+        model = "" prueft self.model (Aufraeum-Modell); ein anderer Name (z. B. self.translate_model)
+        laesst sich denselben Weg mitpruefen."""
+        name = model or self.model
+        if self.native:
+            return self._diagnose_ollama(name)
+        return self._diagnose_openai(name)
+
+    def _diagnose_ollama(self, name: str) -> tuple[str, str]:
+        """GET /api/tags (self.url endet immer auf '/api/chat' -> derselbe Ordner + 'tags')."""
+        tags_url = self.url.rsplit("/", 1)[0] + "/tags"
+        try:
+            r = self._http.get(tags_url, timeout=self.timeout)
+        except requests.RequestException as e:
+            return self.DIAG_UNREACHABLE, (f"Ollama not reachable at {tags_url} ({e}) -> start Ollama "
+                                           f"(install from ollama.com) or check llm.base_url in config.yaml")
+        if not r.ok:
+            # Der Server ANTWORTET, nur mit einem Fehler - etwas anderes als "nicht erreichbar"
+            # (Hinweis des Pruefers, Nachbesserung Arbeitspaket 4 Runde 1).
+            return self.DIAG_UNKNOWN, f"Ollama at {tags_url} answered with an error ({r.status_code})"
+        try:
+            namen = [str(m.get("name", "")) for m in r.json().get("models", [])]
+        except (ValueError, AttributeError, TypeError) as e:
+            return self.DIAG_UNKNOWN, f"Ollama answered at {tags_url}, but the model list could not be read ({e})"
+        if any(_model_matches(name, n) for n in namen):
+            return self.DIAG_OK, f"model {name} is loaded on the Ollama server"
+        return self.DIAG_MODEL_MISSING, f"model {name} is not pulled on the Ollama server -> ollama pull {name}"
+
+    def _diagnose_openai(self, name: str) -> tuple[str, str]:
+        """GET {base}/models - nicht jeder OpenAI-kompatible Server hat das (manche llama.cpp-
+        Bauarten zum Beispiel): dann lieber "unbekannt" sagen als eine Behauptung ohne Beleg.
+        Im Single-Model-Betrieb (ebenfalls llama.cpp) ignoriert der Server das gesendete
+        "model"-Feld UND listet unter /models oft einen Datei- oder Alias-Namen statt des Namens
+        aus config.yaml - ein negativer Namensvergleich allein ist dort nicht verlaesslich. Bevor
+        "Modell fehlt" behauptet wird, wird deshalb zusaetzlich ein echter Chat-Aufruf MIT NAME
+        probiert (self.warmup(name), derselbe Weg wie beim Start, aber mit dem hier gepruefften
+        Namen - nicht immer self.model, sonst wuerde z. B. diagnose(translate_model) das
+        Aufraeum-Modell probieren und ein Server, der Modellnamen prueft (vLLM, ...), meldete
+        faelschlich OK fuer ein fehlendes Uebersetzungsmodell; Nachbesserung Arbeitspaket 4, Runde
+        2, B8): antwortet der Server auf einen Chat mit GENAU diesem Namen, laeuft das Modell,
+        auch wenn die Liste es nicht unter dem Namen zeigt (Nachbesserung Runde 1, B4 - Server wie
+        llama.cpp im Single-Model-Betrieb ignorieren das Feld ohnehin und antworten immer)."""
+        models_url = self.base_url + "/models"
+        try:
+            r = self._http.get(models_url, timeout=self.timeout)
+        except requests.RequestException as e:
+            return self.DIAG_UNREACHABLE, (f"endpoint not reachable at {self.base_url} ({e}) -> start "
+                                           f"the server or check llm.base_url in config.yaml")
+        if not r.ok:
+            return self.DIAG_UNKNOWN, (f"endpoint at {self.base_url} is reachable, but {models_url} answered "
+                                       f"{r.status_code} -> cannot check whether {name} is loaded")
+        try:
+            namen = [str(m.get("id", "")) for m in r.json().get("data", [])]
+        except (ValueError, AttributeError, TypeError) as e:
+            return self.DIAG_UNKNOWN, f"{models_url} answered unexpectedly ({e}) -> cannot check whether {name} is loaded"
+        if any(_model_matches(name, n) for n in namen):
+            return self.DIAG_OK, f"model {name} is available at {self.base_url}"
+        if self.warmup(name):
+            return self.DIAG_OK, (f"endpoint at {self.base_url} answers to a chat request for {name} "
+                                  f"(the model list does not show it by name - common in single-model "
+                                  f"servers like llama.cpp, which ignore the requested model name)")
+        return self.DIAG_MODEL_MISSING, f"model {name} was not found at {models_url} -> check llm.model or the server"
 
     def unload(self) -> None:
         """Beim Programmende die Modelle aus dem Grafikspeicher werfen (keep_alive 0).

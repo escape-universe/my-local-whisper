@@ -10,9 +10,9 @@ import pytest
 
 from wf import i18n
 
-ALLE_MODULE = ["wf.aliases", "wf.audio", "wf.cleanup", "wf.config", "wf.context", "wf.fidelity",
-               "wf.focus", "wf.hotkey", "wf.i18n", "wf.inject", "wf.lang", "wf.overlay", "wf.snip",
-               "wf.stt", "wf.tray", "whisperflow", "calibrate"]
+ALLE_MODULE = ["wf.aliases", "wf.audio", "wf.cleanup", "wf.config", "wf.context", "wf.doctor",
+               "wf.fidelity", "wf.focus", "wf.hotkey", "wf.i18n", "wf.inject", "wf.lang",
+               "wf.overlay", "wf.snip", "wf.stt", "wf.tray", "whisperflow", "calibrate"]
 
 
 @pytest.mark.parametrize("name", ALLE_MODULE)
