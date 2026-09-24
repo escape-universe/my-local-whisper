@@ -163,13 +163,41 @@ ui:
 # them, because it takes the focus away from the menu.
 snip:
   enabled: true
-  # Trigger key. Default: the right Shift key — most people type capitals with the left one.
-  # Alternatives: "menu" (context-menu key), "scroll_lock", "pause", "f9", "f10", "f12", "cmd_r".
-  # Do NOT use "alt_gr" on a German keyboard: @ EUR | { } live there.
-  key: "shift_r"
-  # tap  = fires the moment you press (default).
-  # hold = you have to hold the key, fires on release. Use this if the key you picked is one you
-  #        need in daily typing; a letter or a mouse click in between then cancels.
+  # Trigger key(s). Default: AltGr + Shift together ("alt_gr+shift"), mode "tap" below.
+  # Why not the right Shift key alone (the previous default): anyone who also types capital
+  # letters with the RIGHT Shift key opened the screenshot selection on every capital letter -
+  # fine for one specific person's habit, wrong as a default for everyone else.
+  # Do NOT use "alt_gr" ALONE on a German keyboard: @ EUR | { } live there. The COMBINATION
+  # "alt_gr+shift" is fine for the common case: AltGr by itself still types those characters as
+  # always, and Shift only completes the combination while AltGr is actually held down.
+  # Honestly, not a guarantee: if your typing overlaps enough that Shift goes down WHILE you are
+  # still holding AltGr for a character (e.g. "@" followed, before releasing AltGr, by reaching
+  # for a capital letter), that DOES complete the combination in "tap" mode. If that happens to
+  # you, use mode: "hold" below (a quick overlap then does not fire), or pick a different key.
+  # To go back to the single-key behaviour: key: "shift_r", mode: "hold" (or "tap" if you never
+  # type capitals with the right Shift key).
+  # Combinations join named keys with "+", e.g. "ctrl_r+shift_r" (the order you press them in
+  # does not matter). Groups (either key of the pair triggers it): "shift" (left or right Shift),
+  # "ctrl" (left or right Ctrl), "alt" (left or right Alt), "win"/"cmd" (either Windows key).
+  # "alt_gr" and "alt_r" both mean the right Alt key. Single keys: "menu" (context-menu key),
+  # "scroll_lock", "pause", "print_screen", "insert", "f1".."f24", "cmd_r"/"cmd_l" (Windows key),
+  # "shift_l"/"shift_r", "ctrl_l"/"ctrl_r", "alt_l"/"alt_r" - or a group name used alone.
+  # Avoid pairing AltGr/alt_r with LEFT Ctrl ("ctrl+alt_gr", "ctrl+alt", "ctrl_l+alt_r" and
+  # similar - "ctrl_r+alt_gr" is NOT affected): Windows sends a fake LEFT-CTRL press right before
+  # a real AltGr press. This tool tells that fake press apart from a real left-Ctrl only by NOT
+  # wanting left Ctrl in the combination at all (that is what makes "alt_gr+shift" safe); once
+  # left Ctrl IS part of the combination, there is nothing left to tell the fake press from a real
+  # one, so it counts as genuine left Ctrl - such a combination would then fire from AltGr alone.
+  # An unknown name prints a console warning (with the list of valid names) and falls back to
+  # the default above.
+  # On keyboard layouts where AltGr+Shift+letter itself types a character (e.g. Polish), use
+  # mode "hold" instead of "tap" below: the combination then has to be held for hold_ms, so
+  # quickly typing that character still works as normal.
+  key: "alt_gr+shift"
+  # tap  = fires the moment the combination is complete (default).
+  # hold = you have to hold the whole combination, fires when you let go of it. Use this if part
+  #        of the combination is needed for normal typing (see the layout note above); a foreign
+  #        key or a mouse click in between then cancels, same as with a single key.
   mode: "tap"
   hold_ms: 450             # only used in "hold" mode
   # Whole screen without dragging: press Enter or Space in the selection window (takes the monitor
@@ -177,7 +205,7 @@ snip:
   fullscreen_on_double: false
   double_tap_ms: 400
   # "monitor" = only the monitor the mouse is on (default, half the image, half the tokens if you
-  # feed it to a model). "alle" = the whole virtual desktop.
+  # feed it to a model). "all" (or "alle") = the whole virtual desktop.
   fullscreen_scope: "monitor"
   # Modifier keys (Shift/Ctrl/Alt/Win) are never swallowed, whatever this says.
   suppress: true

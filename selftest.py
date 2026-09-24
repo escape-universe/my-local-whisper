@@ -772,27 +772,43 @@ def test_snip_bausteine() -> None:
     for f in tmp.glob("*.png"):
         f.unlink()
 
-    # Ausloese-Taste
+    # Ausloese-Taste (Arbeitspaket 6: Standard ist jetzt AltGr+Umschalt, keine einzelne Taste mehr)
     w1 = snip.KeyWatcher("shift_r", lambda: None, mode="hold")
-    check("snip: Standardtaste ist die rechte Umschalt-Taste", w1.vk == 0xA1)
-    check("snip: unbekannter Tastenname faellt auf die rechte Umschalt-Taste zurueck",
-          snip.KeyWatcher("gibtsnicht", lambda: None).vk == 0xA1)
-    check("snip: AltGr ist NICHT der Standard (dort liegen @ € |)", snip.KEYS["alt_gr"] != w1.vk)
+    check("snip: Einzeltaste shift_r wird weiter erkannt", w1.vk == 0xA1)
+    check("snip: unbekannter Tastenname faellt auf den NEUEN Standard zurueck (nicht mehr still)",
+          snip.KeyWatcher("gibtsnicht", lambda: None).key_name == snip.DEFAULT_KEY)
+    check("snip: Standard ist die Kombination AltGr+Umschalt, nicht mehr die rechte Umschalt-Taste allein",
+          snip.KeyWatcher(None, lambda: None).key_name == "alt_gr+shift" == snip.DEFAULT_KEY)
+    check("snip: AltGr ALLEIN bleibt tabu (dort liegen @ € |); als Kombination mit Umschalt ist es der Standard",
+          snip.KEYS["alt_gr"] != w1.vk)
     check("snip: Umschalt-Taste wird NIE verschluckt (sonst keine Grossbuchstaben)",
           w1._suppress is False)
     check("snip: Umschalt bleibt auch bei suppress=true + tap unverschluckt",
           snip.KeyWatcher("shift_r", lambda: None, suppress=True, mode="tap")._suppress is False)
+    check("snip: eine Kombination unterdrueckt nichts, selbst bei suppress=true + tap",
+          snip.KeyWatcher("alt_gr+shift", lambda: None, suppress=True, mode="tap")._suppress is False)
     # Sofort-Ausloesung (11.09.2026): ein Antippen der rechten Umschalt-Taste oeffnet die Auswahl,
     # ohne Halten. der Nutzer nutzt fuer Grossbuchstaben nur die linke Umschalt-Taste.
     sofort = snip.KeyWatcher("shift_r", lambda: None, mode="tap")
+    sofort._physically_down = lambda vk: None  # keine echte Taste gedrueckt (Nachbesserung R2, B5)
     sofort._filter(0x0100, type("D", (), {"vkCode": 0xA1})())
     check("snip: rechte Umschalt loest SOFORT beim Antippen aus (kein Halten)",
           list(sofort._jobs.queue) == ["go"], str(list(sofort._jobs.queue)))
+    # Kombination AltGr+Umschalt (Arbeitspaket 6, neuer Standard): tap loest erst aus, wenn beide
+    # unten sind; die Windows-Eigenheit (unechtes linkes Strg vor AltGr) darf das nicht verhindern.
+    kombi = snip.KeyWatcher("alt_gr+shift", lambda: None, mode="tap")
+    kombi._physically_down = lambda vk: None  # keine echte Taste gedrueckt (Nachbesserung R2, B5)
+    for vk in (0xA2, 0xA5, 0xA1):     # unechtes LCtrl, dann AltGr, dann rechte Umschalt
+        kombi._filter(0x0100, type("D", (), {"vkCode": vk})())
+    check("snip: AltGr+Umschalt loest erst aus, wenn beide unten sind (unechtes LCtrl stoert nicht)",
+          list(kombi._jobs.queue) == ["go"], str(list(kombi._jobs.queue)))
     check("snip: Taste ohne eigene Aufgabe darf verschluckt werden",
           snip.KeyWatcher("menu", lambda: None, suppress=True, mode="tap")._suppress is True)
     beschriftung = snip.key_label("shift_r")
     check("snip: Taste hat einen menschlichen Namen (nicht den Code-Namen)",
           len(beschriftung) > 6 and beschriftung != "shift_r", beschriftung)
+    check("snip: Kombinationen bekommen einen lesbaren Namen",
+          snip.key_label("alt_gr+shift") == "AltGr + Shift", snip.key_label("alt_gr+shift"))
 
     # Ganzer Bildschirm = nur der Monitor unter der Maus (spart beim Ansehen die Haelfte Kontext)
     r = snip.monitor_rect()
@@ -829,6 +845,7 @@ def test_snip_halten() -> None:
         w = snip.KeyWatcher("shift_r", lambda: treffer.append(1), mode="hold", hold_ms=200)
         # Mausklick-Erkennung faelschen (echte Klicks kann der Test nicht garantieren)
         w._mouse_clicked_since = lambda reset=False: (False if reset else maus)  # type: ignore[method-assign]
+        w._physically_down = lambda vk: None  # keine echte Taste gedrueckt (Nachbesserung R2, B5)
         w._filter(RUNTER, _Daten(SHIFT_R))
         if andere_taste:
             w._filter(RUNTER, _Daten(TASTE_A))
@@ -846,6 +863,7 @@ def test_snip_halten() -> None:
     check("snip: Halten mit Mausklick dazwischen loest NICHT aus (Umschalt+Klick markiert Text)",
           lauf(0.35, maus=True) == 0)
     w = snip.KeyWatcher("menu", lambda: None, mode="tap")
+    w._physically_down = lambda vk: None  # keine echte Taste gedrueckt (Nachbesserung R2, B5)
     w._filter(RUNTER, _Daten(0x5D))
     check("snip: Betriebsart tap loest sofort beim Druecken aus", w._jobs.qsize() == 1)
 
@@ -854,6 +872,7 @@ def test_snip_halten() -> None:
         w2 = snip.KeyWatcher("shift_r", lambda: None, mode="hold", hold_ms=250,
                              on_double=lambda: None, double_tap_ms=400)
         w2._mouse_clicked_since = lambda reset=False: False  # type: ignore[method-assign]
+        w2._physically_down = lambda vk: None  # keine echte Taste gedrueckt (Nachbesserung R2, B5)
         for i in range(2):
             w2._filter(RUNTER, _Daten(SHIFT_R))
             if buchstabe_dazwischen:
@@ -901,7 +920,7 @@ def test_neue_bilder_zubringer() -> None:
     check("zubringer: Bildmasse ohne Laden gelesen", nb.masse(neu[0]) == "40x30", nb.masse(neu[0]))
     check("zubringer: fehlender Ordner ist kein Fehler", nb.bilder_seit(tmp / "gibtsnicht", 0) == [])
     from wf import config as _cfg
-    erwartet = _Path((_cfg.load_config().get("snip") or {}).get("folder", "data/bilder")).name
+    erwartet = _Path((_cfg.load_config().get("snip") or {}).get("folder", "data/images")).name
     check("zubringer: Bilder-Ordner kommt aus config.yaml", nb.ordner().name == erwartet,
           f"{nb.ordner()} (erwartet: {erwartet})")
     for f in tmp.glob("*.png"):

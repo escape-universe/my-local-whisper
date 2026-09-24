@@ -36,9 +36,10 @@ MARKER = ROOT / "data" / "_zuletzt-angesehen.json"
 
 
 def ordner(cfg_pfad: Path | None = None) -> Path:
-    """Bilder-Ordner aus config.yaml lesen (Standard data/bilder)."""
+    """Bilder-Ordner aus config.yaml lesen (Standard data/images, wie in config.yaml und
+    whisperflow.py - Arbeitspaket 6: die drei Stellen fielen bisher uneinheitlich zurueck)."""
     p = cfg_pfad or (ROOT / "config.yaml")
-    ziel = "data/bilder"
+    ziel = "data/images"
     try:
         import yaml
         cfg = yaml.safe_load(p.read_text(encoding="utf-8")) or {}

@@ -5,11 +5,14 @@ from __future__ import annotations
 
 import io
 import re
+import threading
+import time
 import types
 from pathlib import Path
 
 import numpy as np
 import pytest
+from PIL import Image
 
 import whisperflow as W
 from wf import cleanup as cleanup_mod
@@ -86,6 +89,17 @@ def test_verwerfen(max_s, generation, dauer, verworfen):
 
 def test_verwerfen_abgeschaltet():
     assert _app(discard_on_new=False, discard_max_s=0.0, _generation=5, _pending={})._is_cancelled(1) is False
+
+
+# --- App.wants_all_monitors: fullscreen_scope (Arbeitspaket 6) ---------------------------------
+@pytest.mark.parametrize("scope, erwartet", [
+    ("monitor", False), ("Monitor", False), ("", False), (None, False), ("weiss nicht", False),
+    ("all", True), ("ALL", True), (" all ", True), ("alle", True), ("Alle", True),
+])
+def test_wants_all_monitors_deutsch_und_englisch(scope, erwartet):
+    """Bisher wurde nur das deutsche 'alle' erkannt - ein Nutzer, der 'all' schreibt, bekam
+    still nur den Monitor unter der Maus statt den ganzen virtuellen Desktop."""
+    assert W.App.wants_all_monitors(scope) is erwartet
 
 
 def test_umschalt_modus_druecken_startet_loslassen_nichts_druecken_stoppt():
@@ -267,3 +281,158 @@ def test_selbsttest_und_moduldoku_tragen_den_produktnamen():
     selbsttest = (Path(W.__file__).parent / "selftest.py").read_text(encoding="utf-8")
     assert '"=== my-local-whisper Selbsttests ===\\n"' in selbsttest and "whisperflow-local" not in selbsttest
     assert W.__doc__.startswith("my-local-whisper — ")
+
+
+# --- Standard-Bilderordner: config.yaml, whisperflow.py, tools/neue-bilder.py (Arbeitspaket 6) --
+def test_snip_ordner_faellt_auf_data_images_zurueck_wie_config_yaml():
+    """config.yaml sagt data/images; whisperflow.py fiel bisher auf data/bilder zurueck, wenn
+    snip.folder fehlt (tools/neue-bilder.py ebenso, siehe tests/test_neue_bilder.py) - uneinheitlich.
+    App() laesst sich hier nicht bauen (laedt Whisper/Ollama), deshalb die Vorgabe im Quelltext
+    direkt geprueft, wie schon bei test_selbsttest_und_moduldoku_tragen_den_produktnamen."""
+    quelle = Path(W.__file__).read_text(encoding="utf-8")
+    assert 'sn.get("folder", "data/images")' in quelle
+    assert '"data/bilder"' not in quelle
+
+
+# --- snip.key: leerer Wert ohne Warnung, Startzeile zeigt den AKTIVEN Namen (Nachbesserung Runde 1) --
+def test_snip_key_leerer_wert_ergibt_den_standard_nicht_die_zeichenkette_none():
+    """sn.get("key", DEFAULT) gibt bei key: null (Python None) das None selbst zurueck, str(None)
+    waere dann "None" gewesen - ein "unbekannter Tastenname" fuer KeyWatcher, mit ueberfluessiger
+    Warnung. sn.get("key") or DEFAULT umgeht das. App() laesst sich hier nicht bauen (siehe oben),
+    deshalb wieder die Quelltext-Pruefung."""
+    quelle = Path(W.__file__).read_text(encoding="utf-8")
+    assert 'sn.get("key") or snip_mod.DEFAULT_KEY' in quelle
+    assert 'sn.get("key", snip_mod.DEFAULT_KEY)' not in quelle
+
+
+def test_snip_startzeile_beschriftet_den_aktiven_namen_nicht_den_rohwert():
+    """Nach einem Tippfehler in snip.key faellt KeyWatcher (mit Warnung) auf den Standard zurueck -
+    die Startzeile muss dann den AKTIVEN Namen zeigen (self._snip_watcher.key_name), nicht mehr
+    den nicht mehr aktiven Rohwert aus der Konfiguration (self.snip_key)."""
+    quelle = Path(W.__file__).read_text(encoding="utf-8")
+    assert "key_label(self._snip_watcher.key_name)" in quelle
+    assert "key_label(self.snip_key)" not in quelle
+
+
+# --- do_snip()/do_fullscreen() Ende-zu-Ende (Nachbesserung Runde 1, B3) -------------------------
+# Kriterium 7/8 wurden bisher nur an den Bausteinen geprueft (encode_png, save_image_async,
+# wants_all_monitors), nie am tatsaechlichen Aufruf in do_snip()/do_fullscreen() selbst - genau
+# dort lagen die Befunde des Arbeitspakets (doppelt kodiert, Datei im kritischen Pfad, nur
+# "alle"). grab_screen/select_region/to_clipboard/monitor_rect werden hier ersetzt (echte
+# Windows-APIs); encode_png und save_image_async laufen ECHT gegen tmp_path.
+def _snip_app(tmp_path, **felder) -> W.App:
+    basis = dict(pipeline=types.SimpleNamespace(overlay=overlay.Overlay(enabled=False)),
+                 tray=None, _snip_lock=threading.Lock(), snip_folder=tmp_path,
+                 snip_beep=False, snip_full_scope="monitor")
+    basis.update(felder)
+    return _app(**basis)
+
+
+def _erfasse_hintergrund_threads(monkeypatch) -> list:
+    """save_image_async() selbst wird NICHT ersetzt (es soll ja echt gegen tmp_path laufen) -
+    dieser Helfer haengt sich nur an, um den entstandenen Thread deterministisch abzuwarten
+    (join(), kein sleep)."""
+    threads: list = []
+    orig = W.snip_mod.save_image_async
+
+    def _mit_erfasstem_thread(image, folder, png_bytes=None):
+        pfad, thread = orig(image, folder, png_bytes)
+        threads.append(thread)
+        return pfad, thread
+
+    monkeypatch.setattr(W.snip_mod, "save_image_async", _mit_erfasstem_thread)
+    return threads
+
+
+def test_do_snip_kodiert_einmal_und_clipboard_bekommt_dieselben_bytes_wie_die_datei(tmp_path, monkeypatch):
+    bild = Image.new("RGB", (20, 16), (10, 20, 30))
+    monkeypatch.setattr(W.snip_mod, "grab_screen", lambda: (bild, 0, 0))
+    monkeypatch.setattr(W.snip_mod, "select_region", lambda img, ox, oy: (0, 0, 8, 8))
+    clip_aufrufe: list = []
+    monkeypatch.setattr(W.snip_mod, "to_clipboard",
+                        lambda img, png=None: (clip_aufrufe.append(png), True)[1])
+    encode_aufrufe: list = []
+    orig_encode = W.snip_mod.encode_png
+    monkeypatch.setattr(W.snip_mod, "encode_png",
+                        lambda img: (encode_aufrufe.append(1), orig_encode(img))[1])
+    threads = _erfasse_hintergrund_threads(monkeypatch)
+
+    app = _snip_app(tmp_path)
+    grund = app.do_snip()
+
+    assert grund == ""
+    assert len(encode_aufrufe) == 1                     # PNG genau einmal kodiert (Kriterium 7)
+    assert len(clip_aufrufe) == 1 and clip_aufrufe[0] is not None
+    for t in threads:
+        t.join(timeout=5)
+    [datei] = list(tmp_path.glob("*.png"))
+    assert datei.read_bytes() == clip_aufrufe[0]        # Zwischenablage und Datei: dieselben Bytes
+
+
+def test_do_snip_kehrt_zurueck_bevor_die_datei_geschrieben_ist(tmp_path, monkeypatch):
+    bild = Image.new("RGB", (10, 10), (1, 2, 3))
+    monkeypatch.setattr(W.snip_mod, "grab_screen", lambda: (bild, 0, 0))
+    monkeypatch.setattr(W.snip_mod, "select_region", lambda img, ox, oy: (0, 0, 5, 5))
+    monkeypatch.setattr(W.snip_mod, "to_clipboard", lambda img, png=None: True)
+    frei = threading.Event()
+    orig_write = W.snip_mod._write_png
+
+    def _erst_wenn_freigegeben(path, image, png_bytes):
+        frei.wait(5)
+        orig_write(path, image, png_bytes)
+
+    monkeypatch.setattr(W.snip_mod, "_write_png", _erst_wenn_freigegeben)
+    threads = _erfasse_hintergrund_threads(monkeypatch)
+
+    app = _snip_app(tmp_path)
+    grund = app.do_snip()
+
+    assert grund == ""
+    assert threads and threads[0].is_alive()            # der Schreib-Thread haengt noch
+    assert not list(tmp_path.glob("*.png"))             # "fertig" wartet nicht auf die Datei
+    frei.set()
+    threads[0].join(timeout=5)
+    assert list(tmp_path.glob("*.png"))
+
+
+def test_do_fullscreen_all_schneidet_nicht_auf_einen_monitor_zu(tmp_path, monkeypatch):
+    bild = Image.new("RGB", (30, 20), (5, 5, 5))
+    monkeypatch.setattr(W.snip_mod, "grab_screen", lambda: (bild, 0, 0))
+    monitor_aufrufe: list = []
+    monkeypatch.setattr(W.snip_mod, "monitor_rect", lambda: (monitor_aufrufe.append(1), None)[1])
+    monkeypatch.setattr(W.snip_mod, "to_clipboard", lambda img, png=None: True)
+    monkeypatch.setattr(W, "time", types.SimpleNamespace(sleep=lambda s: None, time=time.time))
+    threads = _erfasse_hintergrund_threads(monkeypatch)
+
+    app = _snip_app(tmp_path, snip_full_scope="all")
+    grund = app.do_fullscreen()
+
+    assert grund == ""
+    assert monitor_aufrufe == []                        # "all": monitor_rect() wird NICHT gerufen
+    for t in threads:
+        t.join(timeout=5)
+    [datei] = list(tmp_path.glob("*.png"))
+    with Image.open(datei) as geladen:
+        assert geladen.size == (30, 20)                 # unveraendert, das ganze (gefaelschte) Bild
+
+
+def test_do_fullscreen_monitor_schneidet_zu(tmp_path, monkeypatch):
+    bild = Image.new("RGB", (30, 20), (5, 5, 5))
+    monkeypatch.setattr(W.snip_mod, "grab_screen", lambda: (bild, 0, 0))
+    monitor_aufrufe: list = []
+    monkeypatch.setattr(W.snip_mod, "monitor_rect",
+                        lambda: (monitor_aufrufe.append(1), (0, 0, 10, 8))[1])
+    monkeypatch.setattr(W.snip_mod, "to_clipboard", lambda img, png=None: True)
+    monkeypatch.setattr(W, "time", types.SimpleNamespace(sleep=lambda s: None, time=time.time))
+    threads = _erfasse_hintergrund_threads(monkeypatch)
+
+    app = _snip_app(tmp_path, snip_full_scope="monitor")
+    grund = app.do_fullscreen()
+
+    assert grund == ""
+    assert len(monitor_aufrufe) == 1                    # "monitor": monitor_rect() wird gerufen
+    for t in threads:
+        t.join(timeout=5)
+    [datei] = list(tmp_path.glob("*.png"))
+    with Image.open(datei) as geladen:
+        assert geladen.size == (10, 8)                  # auf den (gefaelschten) Monitor zugeschnitten

@@ -448,7 +448,10 @@ class App:
         # Bildausschnitt (10.09.2026): eigene Taste, eigener Ordner, eigene Aufbewahrung
         sn = cfg.get("snip", {}) or {}
         self.snip_enabled = bool(sn.get("enabled", True))
-        self.snip_key = str(sn.get("key", "shift_r"))
+        # "or" statt eines .get()-Standards: ein leeres/nicht gesetztes key: (YAML null) soll den
+        # Standard OHNE Warnung ergeben - str(None) waere sonst die Zeichenkette "None" gewesen,
+        # ein "unbekannter Tastenname" fuer KeyWatcher (Nachbesserung Runde 1, Hinweis des Pruefers).
+        self.snip_key = str(sn.get("key") or snip_mod.DEFAULT_KEY)
         self.snip_mode = str(sn.get("mode", "tap"))
         self.snip_hold_ms = int(sn.get("hold_ms", 450))
         self.snip_double = bool(sn.get("fullscreen_on_double", False))
@@ -457,7 +460,7 @@ class App:
         self.snip_suppress = bool(sn.get("suppress", True))
         self.snip_keep_days = int(sn.get("keep_days", 14))
         self.snip_beep = bool(sn.get("beep", True))
-        self.snip_folder = Path(sn.get("folder", "data/bilder"))
+        self.snip_folder = Path(sn.get("folder", "data/images"))
         if not self.snip_folder.is_absolute():
             self.snip_folder = Path(__file__).resolve().parent / self.snip_folder
         self._snip_watcher = None
@@ -715,6 +718,13 @@ class App:
                 self.tray.notify(grund)
 
     # ---------------- Bildausschnitt ----------------
+    @staticmethod
+    def wants_all_monitors(scope: str) -> bool:
+        """"alle" (deutscher Kommentar in config.yaml) und das englische "all" meinen dasselbe.
+        Nachbesserung Arbeitspaket 6: ein englischsprachiger Nutzer, der "all" schreibt, bekam
+        bisher still nur den Monitor unter der Maus."""
+        return str(scope or "").strip().lower() in ("all", "alle")
+
     def do_snip(self) -> str:
         """Bildschirm einfrieren -> drag a region -> Zwischenablage + PNG.
         Rueckgabe: '' = Bild gemacht, sonst der Grund (Abbruch/Fehler) — auch fuer den Test.
@@ -732,8 +742,12 @@ class App:
                 self.pipeline.overlay.error(i18n.t("badge_snip_cancelled"), 0.9)
                 return "abgebrochen"
             ausschnitt = bild.crop(box)
-            in_ablage = snip_mod.to_clipboard(ausschnitt)
-            datei = snip_mod.save_image(ausschnitt, self.snip_folder)
+            # PNG genau einmal kodieren (Messung siehe wf/snip.py encode_png), die Zwischenablage
+            # und die Datei teilen sich die Bytes; die Datei wird im Hintergrund geschrieben,
+            # "fertig" wartet nicht auf die Festplatte - der Name steht trotzdem schon jetzt fest.
+            png = snip_mod.encode_png(ausschnitt)
+            in_ablage = snip_mod.to_clipboard(ausschnitt, png)
+            datei, _ = snip_mod.save_image_async(ausschnitt, self.snip_folder, png)
             groesse = "%d x %d" % ausschnitt.size
             if in_ablage:
                 self.pipeline.overlay.done(i18n.t("badge_snip_ready"))
@@ -765,14 +779,15 @@ class App:
             time.sleep(0.12)          # das eigene Anzeigefeld soll nicht mit aufs Bild
             bild, ox, oy = snip_mod.grab_screen()
             wo = "all monitors"
-            if self.snip_full_scope != "alle":
+            if not self.wants_all_monitors(self.snip_full_scope):
                 # nur der Monitor unter der Maus: halb so grosses Bild, halb so viel Kontext
                 r = snip_mod.monitor_rect()
                 if r:
                     bild = bild.crop((r[0] - ox, r[1] - oy, r[2] - ox, r[3] - oy))
                     wo = "the monitor under the mouse"
-            in_ablage = snip_mod.to_clipboard(bild)
-            datei = snip_mod.save_image(bild, self.snip_folder)
+            png = snip_mod.encode_png(bild)
+            in_ablage = snip_mod.to_clipboard(bild, png)
+            datei, _ = snip_mod.save_image_async(bild, self.snip_folder, png)
             groesse = "%d x %d" % bild.size
             self.pipeline.overlay.done(i18n.t("badge_snip_full"))
             if self.snip_beep:
@@ -878,7 +893,11 @@ class App:
                 on_double=(self.do_fullscreen if self.snip_double else None),
                 double_tap_ms=self.snip_double_ms)
             self._snip_watcher.start()
-            print(f"[snip] screenshots on: {snip_mod.key_label(self.snip_key)} -> drag a region"
+            # Der tatsaechlich aktive Name (nicht der Rohwert aus config.yaml, Nachbesserung
+            # Runde 1): nach einem Tippfehler in snip.key stand hier bisher der NICHT aktive Name,
+            # obwohl KeyWatcher schon auf den Standard zurueckgefallen war (mit Warnung, siehe
+            # wf/snip.py _parse_key_spec).
+            print(f"[snip] screenshots on: {snip_mod.key_label(self._snip_watcher.key_name)} -> drag a region"
                   + (", double-tap -> whole screen. " if self.snip_double
                      else " (Enter in the selection window = whole screen). ")
                   + f"folder {self.snip_folder.name}, kept {self.snip_keep_days} days"
