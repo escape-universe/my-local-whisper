@@ -8,8 +8,9 @@ the git log. Format loosely follows [Keep a Changelog](https://keepachangelog.co
 ### Added
 
 - `py whisperflow.py --doctor`: checks Python, the installed packages, `config.yaml`, the
-  dictionary/alias files, the microphone, the GPU libraries, and the clean-up and translation
-  model, one `[OK]`/`[WARN]`/`[FAIL]` line each, with a fix where it can name one. Runs even when
+  dictionary/alias files, the microphone, the GPU libraries, whether the Whisper model is already
+  on the machine (with its `tokenizer.json`), and the clean-up and translation model, one
+  `[OK]`/`[WARN]`/`[FAIL]` line each, with a fix where it can name one. Runs even when
   the packages it reports on are missing, and even without Windows.
 - `requirements-gpu.txt`: optional CUDA libraries (cuBLAS, cuDNN) as pip packages, for GPU
   acceleration on a machine without a system-wide CUDA install.
@@ -20,7 +21,7 @@ the git log. Format loosely follows [Keep a Changelog](https://keepachangelog.co
   no administrator rights needed.
 - Single-instance guard: starting the app a second time (`py whisperflow.py` or the Startup
   shortcut) prints a short notice and closes the new one; the running instance is left untouched
-  (the old `start-whisperflow.bat` still force-stops it first, as before).
+  (`start-whisperflow.bat` still force-stops it first, as before).
 - A startup diagnosis for the clean-up model tells "server not running" and "model not pulled"
   apart, shown in the console and as a tray note (only after a failed warm-up, never when
   clean-up is switched off).
@@ -49,6 +50,18 @@ the git log. Format loosely follows [Keep a Changelog](https://keepachangelog.co
 
 ### Fixed
 
+- Privacy: no request to Hugging Face at every start any more. The Whisper model used to be
+  checked against the Hub each time the app loaded it (your IP address, the time and the model
+  name went out), even with the model long downloaded. It now loads from the local cache; the Hub
+  is only contacted when the model is not there yet (first start, a newly chosen `stt.model`, or
+  an interrupted download), with a console line saying so. One exception remains: if the model's
+  folder has no `tokenizer.json`, faster-whisper fetches the tokenizer from Hugging Face at every
+  start; `--doctor` shows whether that applies.
+- `data/app.log` no longer grows without limit while the app keeps running for days or weeks:
+  past 2 MB it is now cut back to its newest whole lines (at most 1 MB) during operation too, not
+  only at startup.
+- Calibration (`--calibrate`): answering `ja`, `y` or `yes` now accepts a suggested alias like `j`
+  does, and `nein` or `no` skips it like `n`; typing `y` used to save "y" itself as the alias.
 - A closing quote that was part of the dictated text is no longer stripped by the clean-up step
   (only a quote pair wrapping the whole answer is removed now).
 - `llm.translate_keep_alive: 0` (unload the translation model at once) is honoured instead of

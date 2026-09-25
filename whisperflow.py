@@ -1152,49 +1152,116 @@ def cmd_clean_text(cfg: dict, text: str) -> int:
     erkannt = lang_mod.sniff_de_en(text)
     cleaned, was = pipe.cleaner.clean(text, "default", erkannt)
     cleaned, applied = pipe.aliases.fix(cleaned)
-    print(f"Language: {erkannt or '(unklar)'}")
+    print(f"Language: {erkannt or '(unclear)'}")
     print(f"RAW:      {text!r}")
     print(f"CLEANED:  {cleaned!r}")
     print(f"cleaned:  {was}  aliases: {applied}")
     return 0
 
 
-class _Stamped:
-    """Schreibt jede Zeile mit Uhrzeit davor in eine Datei (fuer die fensterlose Instanz)."""
+def _trim_log(path: Path, max_bytes: int) -> None:
+    """Ist die Datei groesser als max_bytes, bleiben nur ihre juengsten ganzen Zeilen, zusammen
+    hoechstens max_bytes // 2 Bytes. Faellt der Schnitt mitten in eine Zeile, faellt diese Zeile
+    ganz weg (keine halbe Zeile am Anfang). Beim Start und im Dauerbetrieb (_Stamped) dieselbe
+    Regel."""
+    groesse = path.stat().st_size
+    if groesse <= max_bytes:
+        return
+    behalten = max_bytes // 2
+    with open(path, "rb") as f:
+        f.seek(groesse - behalten - 1)
+        rest = f.read()                     # das Byte vor dem Schnitt + die juengsten Bytes
+    if rest[:1] == b"\n":                   # Schnitt genau an einem Zeilenanfang
+        rest = rest[1:]
+    else:                                   # Schnitt mitten in einer Zeile: erst hinter ihr
+        nl = rest.find(b"\n", 1)
+        rest = rest[nl + 1:] if nl >= 0 else b""
+    path.write_bytes(rest)
 
-    def __init__(self, fh):
+
+class _Stamped:
+    """Schreibt jede Zeile mit Uhrzeit davor in eine Datei (fuer die fensterlose Instanz).
+
+    Mit path und max_bytes (so aus _attach_file_log) bleibt die Datei auch im Dauerbetrieb
+    begrenzt (Arbeitspaket 9, 25.09.2026: bisher wurde nur beim Start gekuerzt, mit „Mit Windows
+    starten" laeuft die App aber oft wochenlang, und in app.log steht zu jedem Diktat eine
+    Vorschau). Nach jedem Zeilenende sagt tell() die Groesse (die Schreibposition, kein Lesen der
+    Datei); ueber der Grenze kuerzt _trim_log wie beim Start. Eine Sperre haelt dabei alle Threads
+    an, die gleichzeitig ueber print schreiben: waehrend die Datei geschlossen, gekuerzt und neu
+    geoeffnet wird, geht keine Zeile verloren. Kein Fehler dringt nach aussen - ohne Protokoll
+    weiterlaufen ist besser als abstuerzen."""
+
+    # Beim Beenden friert Python Daemon-Threads ein, auch mitten in write(), also mit gehaltener
+    # Sperre. Dann nur so lange warten und die Zeile verwerfen, statt das Beenden zu blockieren.
+    WAIT_WHILE_FINALIZING_S = 1.0
+
+    def __init__(self, fh, path: Path | None = None, max_bytes: int = 0):
         self._fh = fh
+        self._path = path
+        self._max = max_bytes
+        self._grenze = max_bytes    # ab dieser Groesse wird gekuerzt (siehe _kuerzen)
         self._at_line_start = True
+        # RLock: schreibt Python selbst mitten im Kuerzen nach sys.stderr (z. B. eine Warnung),
+        # haengt derselbe Thread so nicht an seiner eigenen Sperre.
+        self._lock = threading.RLock()
 
     def write(self, s: str) -> int:
         if not s:
             return 0
-        out = []
-        for teil in s.splitlines(True):
-            if self._at_line_start and teil.strip():
-                out.append(time.strftime("%H:%M:%S ") + teil)
-            else:
-                out.append(teil)
-            self._at_line_start = teil.endswith("\n")
-        self._fh.write("".join(out))
-        self._fh.flush()
+        if not self._lock.acquire(timeout=self.WAIT_WHILE_FINALIZING_S if sys.is_finalizing() else -1):
+            return len(s)
+        try:
+            out = []
+            for teil in s.splitlines(True):
+                if self._at_line_start and teil.strip():
+                    out.append(time.strftime("%H:%M:%S ") + teil)
+                else:
+                    out.append(teil)
+                self._at_line_start = teil.endswith("\n")
+            self._fh.write("".join(out))
+            self._fh.flush()
+            if (self._path is not None and self._max > 0 and self._at_line_start
+                    and self._fh.tell() > self._grenze):
+                self._kuerzen()
+        except Exception:  # noqa: BLE001 — ohne Protokoll weiterlaufen ist besser als abstuerzen
+            pass
+        finally:
+            self._lock.release()
         return len(s)
 
     def flush(self) -> None:
-        self._fh.flush()
+        # Ohne die Sperre: write() leert ohnehin nach jedem Schreiben, und Python ruft flush() beim
+        # Beenden auch dann, wenn ein eingefrorener Daemon-Thread die Sperre noch haelt.
+        try:
+            self._fh.flush()
+        except Exception:  # noqa: BLE001 — z. B. gerade von _kuerzen geschlossen
+            pass
+
+    def _kuerzen(self) -> None:
+        """Unter self._lock: Datei schliessen, kuerzen, zum Anhaengen neu oeffnen. Scheitert das
+        Kuerzen (z. B. haelt ein anderes Programm die Datei gesperrt), wird weiter angehaengt und
+        erst nach einem weiteren Viertel von max_bytes erneut versucht, nicht nach jeder Zeile."""
+        try:
+            self._fh.close()
+            _trim_log(self._path, self._max)
+        except OSError:
+            pass
+        finally:
+            self._fh = open(self._path, "a", encoding="utf-8", buffering=1)  # noqa: SIM115
+        self._grenze = max(self._max, self._fh.tell() + self._max // 4)
 
 
 def _attach_file_log(path: Path, max_bytes: int = 2_000_000) -> None:
     """Ohne Konsole (pythonw) ging jede Ausgabe bisher ins Leere — ein Absturz oder eine
     Zeitmessung war damit unsichtbar (Vorfall 09.09.2026). Jetzt: data/app.log, Uhrzeit je
-    Zeile, bei mehr als max_bytes wird die aeltere Haelfte verworfen."""
+    Zeile. Ueber max_bytes bleiben nur die juengsten ganzen Zeilen (hoechstens max_bytes // 2,
+    _trim_log): beim Start und seit Arbeitspaket 9 auch im Dauerbetrieb (_Stamped)."""
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        if path.exists() and path.stat().st_size > max_bytes:
-            rest = path.read_bytes()[-max_bytes // 2:]
-            path.write_bytes(rest[rest.find(b"\n") + 1:])
+        if path.exists():
+            _trim_log(path, max_bytes)
         fh = open(path, "a", encoding="utf-8", buffering=1)  # noqa: SIM115 — lebt so lange wie der Prozess
-        sys.stdout = sys.stderr = _Stamped(fh)  # type: ignore[assignment]
+        sys.stdout = sys.stderr = _Stamped(fh, path, max_bytes)  # type: ignore[assignment]
         print("[app] --- start %s ---" % datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     except Exception:  # noqa: BLE001 — ohne Protokoll weiterlaufen ist besser als gar nicht
         pass

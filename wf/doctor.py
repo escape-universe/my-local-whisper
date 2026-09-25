@@ -20,6 +20,7 @@ Konsolen-Ausgabe englisch (Projektkonvention: sie liest, wer einen Fehler sucht)
 from __future__ import annotations
 
 import importlib
+import os
 import sys
 
 #: importlib-Modulname -> (Pip-Paket-Name fuer die Abhilfe-Zeile, fehlt es nur optional).
@@ -41,7 +42,8 @@ _PACKAGES: list[tuple[str, str, bool]] = [
 #: Pruefpunkte, die config.yaml brauchen - wird cfg nicht geladen, bekommt jeder davon eine
 # eigene "skipped"-Zeile statt stillschweigend zu fehlen (Nachbesserung Arbeitspaket 4, Runde 2).
 _CONFIG_ABHAENGIGE_PRUEFPUNKTE = (
-    "dictionary/alias files", "microphone", "GPU", "clean-up model", "translation model",
+    "dictionary/alias files", "microphone", "GPU", "speech model cache", "clean-up model",
+    "translation model",
 )
 
 
@@ -169,6 +171,40 @@ def _check_gpu() -> tuple[str, str]:
     return "ok", f"{n} CUDA GPU(s) found (cuBLAS/cuDNN is only checked on Windows)"
 
 
+def _check_speech_model_cache(cfg: dict) -> tuple[str, str]:
+    """Liegt das Whisper-Modell (stt.model) schon lokal, und mit tokenizer.json? Ohne Netz: der
+    lokale Ordner kommt ueber download_model(..., local_files_only=True), denselben Weg wie in
+    wf/stt.py (Nachbesserung Arbeitspaket 9, Runde 1). Die tokenizer.json zaehlt, weil
+    faster-whisper sonst bei JEDEM Laden Tokenizer.from_pretrained("openai/whisper-tiny...")
+    aufruft, also Hugging Face fragt (faster_whisper/transcribe.py, gelesen in 1.1.0 und 1.2.1).
+    Ein Modellordner in stt.model wird direkt angesehen, wie faster-whisper es auch tut."""
+    model = (cfg.get("stt", {}) or {}).get("model", "large-v3-turbo")
+    if os.path.isdir(model):
+        ordner, name = model, f"speech model folder {model}"
+        if not os.path.isfile(os.path.join(ordner, "model.bin")):
+            return "fail", f"{name} has no model.bin -> check stt.model in config.yaml"
+    else:
+        try:
+            from faster_whisper import download_model
+        except Exception as e:  # noqa: BLE001
+            return "warn", f"speech model: cannot check (faster-whisper not installed yet: {e})"
+        from wf import stt as stt_mod
+        name = f"speech model {model}"
+        try:
+            ordner = download_model(model, local_files_only=True)
+        except Exception as e:  # noqa: BLE001
+            if not stt_mod._nicht_im_cache(e):
+                raise                          # z. B. unbekannter Modellname -> FAIL-Zeile mit Hinweis
+            ordner = ""
+        if not ordner or not os.path.isfile(os.path.join(ordner, "model.bin")):
+            return "warn", (f"{name} is not (completely) in the local cache yet -> downloaded once "
+                            f"on the next start (from Hugging Face)")
+    if not os.path.isfile(os.path.join(ordner, "tokenizer.json")):
+        return "warn", (f"{name} is on this machine, but without tokenizer.json -> faster-whisper "
+                        f"fetches the tokenizer from Hugging Face at every start")
+    return "ok", f"{name} is on this machine, with tokenizer.json -> loads without internet"
+
+
 def _check_cleanup_model(cfg: dict) -> tuple[str, str, str]:
     """(Zeilen-Status, Text, roher diagnose()-Statuscode). Der dritte Wert ist fuer
     _check_translate_model (identischer Server -> keine zweite, identische Netzabfrage,
@@ -246,6 +282,7 @@ def run_doctor() -> int:
              hint="check dictionary_path/aliases_path in config.yaml")
         check(_check_microphone, "microphone", cfg, hint="check audio.input_device in config.yaml")
         check(_check_gpu, "GPU")
+        check(_check_speech_model_cache, "speech model cache", cfg, hint="check stt.model in config.yaml")
         try:
             cm_status, cm_text, cleanup_diag_status = _check_cleanup_model(cfg)
         except Exception as e:  # noqa: BLE001

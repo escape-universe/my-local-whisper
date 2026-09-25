@@ -8,7 +8,10 @@ Nachbesserung Runde 1 (Bloecker B1/B2 des Pruefers): wf/doctor.py importiert am 
 die Standardbibliothek (wf.cleanup/config/stt kommen erst innerhalb der jeweiligen Pruefung) -
 "cleanup"/"stt" tauchen deshalb hier nicht mehr als Modulattribute von doctor auf, sondern werden
 direkt aus wf importiert und dort gepatcht. Ausserdem ein Subprozess-Test (test_doctor_subprozess_*),
-der echte fehlende Kernpakete simuliert - genau der Fall, den die conftest-Attrappen verdecken."""
+der echte fehlende Kernpakete simuliert - genau der Fall, den die conftest-Attrappen verdecken.
+
+Nachbesserung Arbeitspaket 9, Runde 1: Pruefzeile "speech model cache" (liegt das Whisper-Modell
+lokal, mit tokenizer.json?), mit einer faster_whisper-Attrappe und ohne Netz."""
 from __future__ import annotations
 
 import subprocess
@@ -210,6 +213,114 @@ def test_gpu_mit_karte_nicht_pruefbar_ist_ok(monkeypatch):
     assert status == "ok" and "2 CUDA GPU" in text
 
 
+# --- Sprachmodell im lokalen Cache (Nachbesserung Arbeitspaket 9, Runde 1) -------------------------
+class LocalEntryNotFoundError(FileNotFoundError):
+    """Gleichnamige Attrappe der huggingface_hub-Ausnahme "nicht im lokalen Cache"."""
+
+
+def _faster_whisper_mit_snapshot(monkeypatch, snapshot, dateien=("model.bin", "tokenizer.json")) -> list:
+    """faster_whisper-Attrappe: download_model(..., local_files_only=True) liefert den Snapshot-
+    Ordner mit den genannten Dateien; snapshot=None heisst "nicht im Cache" (wirft die gleichnamige
+    Ausnahme). Ein Aufruf ohne local_files_only=True waere ein Netzaufruf: pytest.fail, das geht
+    auch durch ein "except Exception"."""
+    aufrufe: list = []
+
+    def download_model(size_or_id, local_files_only=False, **kwargs):
+        aufrufe.append((size_or_id, local_files_only))
+        if local_files_only is not True:
+            pytest.fail("download_model ohne local_files_only=True waere ein Netzaufruf")
+        if snapshot is None:
+            raise LocalEntryNotFoundError("Cannot find an appropriate cached snapshot folder (Attrappe)")
+        snapshot.mkdir(parents=True, exist_ok=True)
+        for datei in dateien:
+            (snapshot / datei).write_bytes(b"")
+        return str(snapshot)
+
+    modul = types.ModuleType("faster_whisper")
+    modul.download_model = download_model
+    monkeypatch.setitem(sys.modules, "faster_whisper", modul)
+    return aufrufe
+
+
+def test_sprachmodell_im_cache_mit_tokenizer_ist_ok(monkeypatch, tmp_path):
+    aufrufe = _faster_whisper_mit_snapshot(monkeypatch, tmp_path / "snap")
+    status, text = doctor._check_speech_model_cache({"stt": {"model": "large-v3-turbo"}})
+    assert status == "ok" and "large-v3-turbo" in text and "loads without internet" in text
+    assert aufrufe == [("large-v3-turbo", True)]      # nur lokal nachgesehen
+
+
+def test_sprachmodell_im_cache_ohne_tokenizer_ist_warn(monkeypatch, tmp_path):
+    """Der Weg aus dem Befund des Pruefers: ohne tokenizer.json ruft faster-whisper bei jedem Laden
+    Tokenizer.from_pretrained auf, fragt also Hugging Face."""
+    _faster_whisper_mit_snapshot(monkeypatch, tmp_path / "snap", dateien=("model.bin",))
+    status, text = doctor._check_speech_model_cache({})
+    assert status == "warn" and "fetches the tokenizer from Hugging Face at every start" in text
+
+
+@pytest.mark.parametrize("snapshot_dateien", [None, ("tokenizer.json",)], ids=["nicht-im-cache", "halber-snapshot"])
+def test_sprachmodell_noch_nicht_im_cache_ist_warn(monkeypatch, tmp_path, snapshot_dateien):
+    snapshot = None if snapshot_dateien is None else tmp_path / "snap"
+    _faster_whisper_mit_snapshot(monkeypatch, snapshot, dateien=snapshot_dateien or ())
+    status, text = doctor._check_speech_model_cache({"stt": {"model": "small"}})
+    assert status == "warn" and "small" in text and "downloaded once on the next start" in text
+
+
+def test_sprachmodell_ohne_faster_whisper_ist_warn_ohne_absturz(monkeypatch):
+    monkeypatch.setitem(sys.modules, "faster_whisper", None)   # import scheitert wie ohne das Paket
+    status, text = doctor._check_speech_model_cache({})
+    assert status == "warn" and "cannot check" in text and "faster-whisper" in text
+
+
+def test_sprachmodell_unbekannter_name_wird_eine_fail_zeile(monkeypatch, capsys):
+    """Ein anderer Fehler als "nicht im Cache" (z. B. ein Tippfehler in stt.model) wird nicht als
+    "wird heruntergeladen" verharmlost: die Pruefung wirft, run_doctor macht eine FAIL-Zeile daraus."""
+    def download_model(size_or_id, local_files_only=False, **kwargs):
+        raise ValueError(f"Invalid model size '{size_or_id}' (Attrappe)")
+
+    modul = types.ModuleType("faster_whisper")
+    modul.download_model = download_model
+    monkeypatch.setitem(sys.modules, "faster_whisper", modul)
+    echte_pruefung = doctor._check_speech_model_cache    # _alles_gut() ersetzt sie gleich
+    with pytest.raises(ValueError):
+        doctor._check_speech_model_cache({"stt": {"model": "large-v9"}})
+    _alles_gut(monkeypatch)
+    monkeypatch.setattr(doctor, "_check_speech_model_cache", echte_pruefung)
+    monkeypatch.setattr(doctor, "_check_config", lambda: ("ok", "config.yaml readable", {"stt": {"model": "large-v9"}}))
+    assert doctor.run_doctor() == 1
+    assert ("[FAIL] speech model cache check crashed (Invalid model size 'large-v9' (Attrappe)) "
+            "-> check stt.model in config.yaml") in capsys.readouterr().out
+
+
+def test_run_doctor_nennt_das_sprachmodell_aus_der_config(monkeypatch, capsys, tmp_path):
+    """Die Zeile erscheint im echten Ablauf, mit stt.model aus der ausgelieferten config.yaml.
+    Ersetzt sind faster_whisper, das Netz (Ollama) und alles, was echte Hardware oder echte
+    Paket-Importe anfassen wuerde (Mikrofon, GPU, Paketliste)."""
+    monkeypatch.setattr(doctor, "_PACKAGES", [])
+    monkeypatch.setattr(doctor, "_check_microphone", lambda cfg: ("ok", "Mikrofon (Attrappe)"))
+    monkeypatch.setattr(doctor, "_check_gpu", lambda: ("warn", "GPU (Attrappe)"))
+    monkeypatch.setattr(doctor, "_check_cleanup_model", lambda cfg: ("warn", "not checked in this test", ""))
+    monkeypatch.setattr(doctor, "_check_translate_model", lambda cfg, cleanup_status="": ("warn", "not checked in this test"))
+    aufrufe = _faster_whisper_mit_snapshot(monkeypatch, tmp_path / "snap")
+    doctor.run_doctor()
+    assert ("[OK] speech model large-v3-turbo is on this machine, with tokenizer.json -> loads without "
+            "internet") in capsys.readouterr().out
+    assert aufrufe == [("large-v3-turbo", True)]
+
+
+@pytest.mark.parametrize("dateien, status, stichwort", [
+    (("model.bin", "tokenizer.json"), "ok", "loads without internet"),
+    (("model.bin",), "warn", "fetches the tokenizer from Hugging Face at every start"),
+    ((), "fail", "has no model.bin"),
+])
+def test_sprachmodell_als_lokaler_ordner(monkeypatch, tmp_path, dateien, status, stichwort):
+    """stt.model als Modellordner: direkt angesehen, ohne faster_whisper und ohne Hub."""
+    monkeypatch.setitem(sys.modules, "faster_whisper", None)   # darf dafuer gar nicht gebraucht werden
+    for datei in dateien:
+        (tmp_path / datei).write_bytes(b"")
+    ergebnis, text = doctor._check_speech_model_cache({"stt": {"model": str(tmp_path)}})
+    assert ergebnis == status and stichwort in text
+
+
 # --- Aufraeum-/Uebersetzungsmodell ------------------------------------------------------------------
 def test_cleanup_modell_ok(monkeypatch):
     monkeypatch.setattr(cleanup.Cleaner, "diagnose", lambda self, model="": (cleanup.Cleaner.DIAG_OK, "laeuft"))
@@ -278,6 +389,7 @@ def _alles_gut(monkeypatch) -> None:
     monkeypatch.setattr(doctor, "_check_dictionary_files", lambda cfg: ("ok", "gefunden"))
     monkeypatch.setattr(doctor, "_check_microphone", lambda cfg: ("ok", "Standardmikrofon"))
     monkeypatch.setattr(doctor, "_check_gpu", lambda: ("warn", "no CUDA GPU"))
+    monkeypatch.setattr(doctor, "_check_speech_model_cache", lambda cfg: ("ok", "speech model im Cache"))
     monkeypatch.setattr(doctor, "_check_cleanup_model", lambda cfg: ("ok", "laeuft", cleanup.Cleaner.DIAG_OK))
     monkeypatch.setattr(doctor, "_check_translate_model", lambda cfg, cleanup_status="": ("warn", "fehlt noch"))
 
@@ -332,7 +444,8 @@ def test_run_doctor_ueberspringt_config_abhaengige_pruefungen_wenn_config_kaputt
     monkeypatch.setattr(doctor, "_check_dictionary_files", lambda cfg: aufgerufen.append("dict") or ("ok", "-"))
     assert doctor.run_doctor() == 1                 # config.yaml unreadable ist selbst ein FAIL
     out = capsys.readouterr().out
-    for name in ("dictionary/alias files", "microphone", "GPU", "clean-up model", "translation model"):
+    for name in ("dictionary/alias files", "microphone", "GPU", "speech model cache", "clean-up model",
+                 "translation model"):
         assert f"{name}: skipped (config.yaml not loaded)" in out
     assert aufgerufen == []                          # Folgepruefungen laufen dann nicht mehr
 
@@ -341,6 +454,7 @@ def test_run_doctor_ueberspringt_config_abhaengige_pruefungen_wenn_config_kaputt
     ("_check_dictionary_files", "dictionary/alias files"),
     ("_check_microphone", "microphone"),
     ("_check_gpu", "GPU"),
+    ("_check_speech_model_cache", "speech model cache"),
 ])
 def test_run_doctor_eine_abstuerzende_pruefung_wird_zu_einer_fail_zeile(monkeypatch, kaputte_pruefung,
                                                                         erwartetes_label, capsys):
@@ -360,7 +474,8 @@ def test_run_doctor_eine_abstuerzende_pruefung_wird_zu_einer_fail_zeile(monkeypa
     assert "[OK] laeuft" in out                      # die Pruefung DANACH lief trotzdem
 
 
-@pytest.mark.parametrize("kaputte_pruefung", ["_check_dictionary_files", "_check_microphone"])
+@pytest.mark.parametrize("kaputte_pruefung", ["_check_dictionary_files", "_check_microphone",
+                                              "_check_speech_model_cache"])
 def test_run_doctor_abstuerzende_pruefung_nennt_den_konfig_abschnitt(monkeypatch, kaputte_pruefung, capsys):
     """Nachbesserung Runde 2: wo sinnvoll, nennt die Absturzzeile auch den betroffenen
     config.yaml-Abschnitt (Hinweis des Pruefers). "config.yaml" alleine reicht als Beleg nicht -

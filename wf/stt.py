@@ -88,6 +88,18 @@ def _dll_laedt(loader: Callable[[str], object], name: str) -> bool:
         return False
 
 
+def _nicht_im_cache(e: BaseException) -> bool:
+    """Heisst der Fehler "Modell liegt nicht im lokalen Cache"? Mit local_files_only=True ruft
+    faster-whisper huggingface_hub.snapshot_download(local_files_only=True) auf, und das wirft
+    dann LocalEntryNotFoundError (Quelltext gelesen 25.09.2026: faster-whisper 1.1.0 und 1.2.1,
+    huggingface_hub 0.21.0, 0.36.2, 1.0.0, 1.33.0, 2.0.0); seit huggingface_hub 1.22.0 auch
+    deren Unterklasse IncompleteSnapshotError, wenn ein abgebrochener Download einen halben
+    Snapshot hinterlassen hat. Erkannt am Klassennamen in der Vererbungskette statt per Import:
+    die Klasse zog zwischen den Versionen um (utils/_errors.py, dann errors.py), der Name blieb.
+    Jeder andere Fehler (CUDA, kaputte Datei, unbekannter Modellname) zaehlt nicht."""
+    return any(k.__name__ == "LocalEntryNotFoundError" for k in type(e).__mro__)
+
+
 def _detect_device(forced: str, dll_check: Callable[[], bool | None] | None = None) -> tuple[str, str]:
     """Returns (device, compute_type). dll_check prueft cuBLAS/cuDNN (Default: cuda_dlls_loadable),
     austauschbar fuer Tests. None (nicht pruefbar) aendert nichts am Verhalten."""
@@ -144,8 +156,7 @@ class Transcriber:
         from faster_whisper import WhisperModel
         print(f"[stt] loading {self.model_size} on {self.device} (compute={self.compute_type}) ...")
         try:
-            self._model = WhisperModel(self.model_size, device=self.device,
-                                       compute_type=self.compute_type)
+            self._model = self._create_model(WhisperModel)
         except Exception as e:  # noqa: BLE001
             # CUDA-Ladefehler (z. B. fehlende cuBLAS/cuDNN-DLL trotz device: cuda erzwungen, oder
             # eine GPU, die CTranslate2 doch nicht unterstuetzt) soll die App nicht abstuerzen
@@ -156,9 +167,45 @@ class Transcriber:
             print(f"[stt] CUDA model load failed ({e}) -> falling back to the CPU (compute=int8). "
                   f"Fix: {GPU_FIX_HINT}")
             self.device, self.compute_type = "cpu", "int8"
-            self._model = WhisperModel(self.model_size, device=self.device,
-                                       compute_type=self.compute_type)
+            self._model = self._create_model(WhisperModel)
         self._fit_prompt()
+
+    def _create_model(self, whisper_model: Callable[..., Any]) -> Any:
+        """Modell erzeugen, zuerst NUR aus dem lokalen Cache (Arbeitspaket 9, 25.09.2026).
+
+        Ohne local_files_only fragte faster-whisper bei JEDEM Start huggingface.co nach der
+        aktuellen Modellversion (snapshot_download online), auch mit laengst geladenem Modell -
+        IP-Adresse, Zeitpunkt und Modellname gingen raus. Jetzt: local_files_only=True; nur wenn
+        das Modell dort fehlt (erster Start, anderes stt.model) oder nur halb da ist, einmal der
+        Download. Jeder andere Fehler geht unveraendert an den Aufrufer, also an den CPU-Rueckfall
+        in load(), der ebenfalls hierueber und damit wieder zuerst lokal laedt."""
+        kw = {"device": self.device, "compute_type": self.compute_type}
+        if os.path.isdir(self.model_size):
+            # stt.model ist ein lokaler Modellordner (erlaubt faster-whisper statt eines Namens):
+            # der Aufruf wie bisher, faster-whisper liest den Ordner direkt, ohne Hub.
+            return whisper_model(self.model_size, **kw)
+        try:
+            return whisper_model(self.model_size, local_files_only=True, **kw)
+        except Exception as e:  # noqa: BLE001
+            if not (_nicht_im_cache(e) or self._snapshot_ohne_modelldatei()):
+                raise
+        print(f"[stt] {self.model_size} is not (completely) in the local model cache -> downloading "
+              f"the speech model once (from Hugging Face) ...")
+        return whisper_model(self.model_size, local_files_only=False, **kw)
+
+    def _snapshot_ohne_modelldatei(self) -> bool:
+        """Liegt das Modell nur halb im Cache, ohne model.bin? So bleibt ein abgebrochener erster
+        Download (Rechner aus, App neu gestartet) zurueck. huggingface_hub vor 1.22.0 gibt den
+        halben Snapshot-Ordner mit local_files_only=True trotzdem zurueck ("we can't check if all
+        the files are actually there"), dann scheitert CTranslate2 an der fehlenden Datei statt an
+        einer Cache-Ausnahme. Bisher lud der Hub-Abgleich bei jedem Start den Rest nach; das bleibt
+        so. Nur nach einem gescheiterten lokalen Laden gefragt, ebenfalls ohne Netz."""
+        try:
+            from faster_whisper import download_model
+            ordner = download_model(self.model_size, local_files_only=True)
+        except Exception:  # noqa: BLE001 - dann gibt es keinen halben Ordner, der Fehler ist ein anderer
+            return False
+        return not os.path.isfile(os.path.join(ordner, "model.bin"))
 
     def _fit_prompt(self) -> None:
         """initial_prompt auf das Token-Budget kuerzen (Begriffe von hinten weglassen)."""

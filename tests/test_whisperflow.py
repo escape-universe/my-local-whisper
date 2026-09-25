@@ -3,7 +3,8 @@ Umschalt-Modus und die Reihenfolge der Endverarbeitung (Faelle aus selftest.py);
 Konsolen-Ausgaben beim Umschalten und der sichtbare Produktname in Skripten und Selbsttest.
 Seit Arbeitspaket 7: state.json atomar, Verlauf im Dauerbetrieb, Tray-Einstellungen und Autostart,
 Windows-Meldung und der Start in main() (eine Instanz, kaputte Einstellungen). Die Aufnahmen selbst
-(Abschnitte je Aufnahme) stehen in tests/test_aufnahmen.py."""
+(Abschnitte je Aufnahme) stehen in tests/test_aufnahmen.py. Seit Arbeitspaket 9: data/app.log bleibt
+auch im Dauerbetrieb begrenzt (auch mit mehreren schreibenden Threads), --clean-text englisch."""
 from __future__ import annotations
 
 import ctypes
@@ -74,6 +75,192 @@ def test_leeres_schreiben_und_flush():
     st.write("x\n")
     st.flush()
     assert d.geleert >= 2                          # jedes write leert sofort (Absturz-sicher)
+
+
+# --- data/app.log bleibt auch im Dauerbetrieb begrenzt (Arbeitspaket 9) --------------------------
+ZEILE = re.compile(UHRZEIT + r"Zeile (\d{4}) x{40}")
+
+
+@pytest.fixture
+def protokoll(tmp_path, monkeypatch):
+    """_attach_file_log wie beim fensterlosen Start (pythonw), in tmp_path. sys.stdout/stderr
+    kommen danach zurueck (monkeypatch); die Datei wird geschlossen, sonst raeumt Windows
+    tmp_path nicht auf."""
+    monkeypatch.setattr(W.sys, "stdout", W.sys.stdout)
+    monkeypatch.setattr(W.sys, "stderr", W.sys.stderr)
+    pfad = tmp_path / "data" / "app.log"
+    angehaengt: list = []
+
+    def anhaengen(max_bytes: int):
+        W._attach_file_log(pfad, max_bytes=max_bytes)
+        angehaengt.append(W.sys.stdout)
+        return W.sys.stdout
+
+    yield pfad, anhaengen
+    for st in angehaengt:
+        st._fh.close()
+
+
+def test_app_log_bleibt_im_dauerbetrieb_unter_der_grenze(protokoll):
+    """Befund (Pruefung Paket 8): gekuerzt wurde nur beim Start, im Dauerbetrieb wuchs die Datei
+    ohne Grenze. Jetzt haelt die Grenze nach jeder Zeile, die juengsten Zeilen bleiben lueckenlos,
+    und am Anfang steht keine halbe Zeile."""
+    pfad, anhaengen = protokoll
+    anhaengen(4000)
+    for i in range(400):                           # ~24 KB, sechsmal so viel wie die Grenze
+        print(f"Zeile {i:04d} " + "x" * 40)
+        groesse = len(pfad.read_bytes())           # gelesen statt stat(): die Datei ist noch offen
+        assert groesse <= 4000, f"nach Zeile {i}: {groesse} Bytes"
+    treffer = [ZEILE.fullmatch(z) for z in pfad.read_text(encoding="utf-8").splitlines()]
+    assert all(treffer)                            # jede Zeile ganz, auch die erste
+    nummern = [int(t.group(1)) for t in treffer]
+    assert nummern == list(range(nummern[0], 400)) # die juengsten, lueckenlos bis zur letzten
+    assert nummern[0] > 0                          # es wurde wirklich gekuerzt
+
+
+def test_app_log_parallele_schreiber_verlieren_keine_zeile(protokoll):
+    """Vier Threads schreiben gleichzeitig ueber print, waehrend mehrfach gekuerzt wird. Von jedem
+    Thread bleiben seine juengsten Zeilen lueckenlos bis zu seiner letzten (oder alle liegen im
+    weggekuerzten, aelteren Teil): beim Schliessen, Kuerzen und Neu-Oeffnen geht nichts verloren.
+    Gezaehlt wird je Meldung, nicht je Zeile: print schreibt Text und Zeilenende getrennt, zwei
+    Threads koennen sich dazwischen schieben (so war es schon vor Arbeitspaket 9)."""
+    pfad, anhaengen = protokoll
+    st = anhaengen(6000)
+    los = threading.Barrier(4)
+
+    def schreiber(t: int) -> None:
+        los.wait()
+        for i in range(300):
+            print(f"T{t}-{i:04d}", file=st)
+
+    threads = [threading.Thread(target=schreiber, args=(t,)) for t in range(4)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join(timeout=30)
+    assert not any(th.is_alive() for th in threads)
+    daten = pfad.read_bytes()
+    inhalt = daten.decode("utf-8")
+    assert len(daten) <= 6000
+    erhalten = 0
+    for t in range(4):
+        nummern = [int(n) for n in re.findall(rf"T{t}-(\d{{4}})", inhalt)]
+        assert nummern == list(range(300 - len(nummern), 300)), (t, nummern[:3])
+        erhalten += len(nummern)
+    assert 0 < erhalten < 4 * 300                  # gekuerzt wurde, das Juengste ist da
+    assert re.search(r"-0299\s*$", inhalt)         # die zuletzt geschriebene Meldung steht am Ende
+    assert all(re.match(UHRZEIT, z) for z in inhalt.splitlines() if z)   # keine halbe Zeile
+
+
+def test_app_log_zweiter_thread_mitten_im_kuerzen_verliert_nichts(protokoll, monkeypatch):
+    """Der Test oben haengt vom Zufall der Thread-Wechsel ab; dieser nicht: genau waehrend
+    gekuerzt wird (die Datei ist dafuer geschlossen), schreibt ein zweiter Thread. Er muss warten,
+    bis die Datei wieder offen ist, und seine Zeile steht danach genau einmal darin. Ohne die Sperre
+    ginge sie in die geschlossene Datei, der Fehler wuerde still geschluckt, die Zeile waere weg.
+    Das join(timeout) laeuft mit Sperre ab (der zweite Thread wartet ja); ohne kehrte es sofort
+    zurueck."""
+    pfad, anhaengen = protokoll
+    st = anhaengen(4000)
+    echt = W._trim_log
+    zweiter: list[threading.Thread] = []
+
+    def kuerzen_waehrend_ein_zweiter_schreibt(p, max_bytes):
+        if not zweiter:
+            th = threading.Thread(target=print, args=("ZWEITER THREAD",), kwargs={"file": st})
+            zweiter.append(th)
+            th.start()
+            th.join(timeout=0.2)
+        echt(p, max_bytes)
+
+    monkeypatch.setattr(W, "_trim_log", kuerzen_waehrend_ein_zweiter_schreibt)
+    i = 0
+    while not zweiter:                             # bis zum ersten Kuerzen (~66 Zeilen)
+        print(f"Zeile {i:04d} " + "x" * 40)
+        i += 1
+        assert i < 1000
+    print("danach")                                # weit unter der Grenze: kein zweites Kuerzen
+    zweiter[0].join(timeout=10)
+    assert not zweiter[0].is_alive()
+    assert pfad.read_text(encoding="utf-8").count("ZWEITER THREAD") == 1
+
+
+def test_app_log_gesperrt_weiter_protokollieren_ohne_versuch_je_zeile(protokoll, monkeypatch):
+    """Haelt ein anderes Programm die Datei gesperrt, scheitert das Kuerzen: weiter anhaengen,
+    nichts verlieren, nichts nach aussen werfen, und nicht nach jeder Zeile neu versuchen."""
+    pfad, anhaengen = protokoll
+    anhaengen(4000)
+    versuche: list = []
+
+    def gesperrt(p, max_bytes):
+        versuche.append(p)
+        raise PermissionError("Attrappe: von einem anderen Programm gesperrt")
+
+    monkeypatch.setattr(W, "_trim_log", gesperrt)
+    for i in range(200):                           # ~12 KB: 8 KB ueber der Grenze, ~135 Zeilen
+        print(f"Zeile {i:04d} " + "x" * 40)
+    daten = pfad.read_bytes()
+    zeilen = daten.decode("utf-8").splitlines()[1:]                     # ohne die Startzeile
+    assert [int(ZEILE.fullmatch(z).group(1)) for z in zeilen] == list(range(200))
+    # erster Versuch ueber 4000 Bytes, danach erst nach je weiteren 1000 Bytes (max_bytes // 4)
+    assert 1 <= len(versuche) <= (len(daten) - 4000) // 1000 + 1
+
+
+@pytest.mark.parametrize("inhalt, erwartet", [
+    (b"".join(b"%09d\n" % i for i in range(300)),                  # Schnitt genau am Zeilenanfang
+     b"".join(b"%09d\n" % i for i in range(200, 300))),
+    (b"".join(b"%09d\n" % i for i in range(300)) + b"12345",       # Schnitt mitten in Zeile 200
+     b"".join(b"%09d\n" % i for i in range(201, 300)) + b"12345"),
+    (b"x" * 2500 + b"\n", b""),                                     # keine ganze Zeile im Rest
+    (b"kurz\n" * 10, b"kurz\n" * 10),                               # unter der Grenze: unberuehrt
+], ids=["schnitt-am-zeilenanfang", "schnitt-in-der-zeile", "keine-ganze-zeile", "unter-der-grenze"])
+def test_trim_log_behaelt_die_juengsten_ganzen_zeilen(tmp_path, inhalt, erwartet):
+    """Beim Start und im Dauerbetrieb dieselbe Regel: ueber max_bytes bleiben hoechstens
+    max_bytes // 2 Bytes, und nur ganze Zeilen am Anfang."""
+    pfad = tmp_path / "app.log"
+    pfad.write_bytes(inhalt)
+    W._trim_log(pfad, 2000)
+    assert pfad.read_bytes() == erwartet
+
+
+def test_stamped_schreibfehler_dringt_nicht_nach_aussen():
+    """print() aus einem Diktat-Thread darf nicht an einem Schreibfehler (Datentraeger voll)
+    scheitern: ohne Protokoll weiterlaufen ist besser als abstuerzen."""
+    class _Voll(io.StringIO):
+        def write(self, s):
+            raise OSError("Attrappe: Datentraeger voll")
+
+    st = W._Stamped(_Voll())
+    assert st.write("Diktat fertig\n") == len("Diktat fertig\n")
+    st.flush()
+
+
+def test_stamped_haengt_beim_beenden_nicht_an_einer_verwaisten_sperre(tmp_path, monkeypatch):
+    """Beim Beenden friert Python Daemon-Threads ein, womoeglich mitten in write(), also mit
+    gehaltener Sperre. write() wartet dann nur kurz und verwirft die Zeile, flush() wartet gar
+    nicht - das Beenden bleibt nicht haengen."""
+    pfad = tmp_path / "app.log"
+    st = W._Stamped(open(pfad, "a", encoding="utf-8", buffering=1), pfad, 4000)  # noqa: SIM115
+    gehalten, loslassen = threading.Event(), threading.Event()
+
+    def eingefroren() -> None:
+        with st._lock:
+            gehalten.set()
+            loslassen.wait(10)
+
+    th = threading.Thread(target=eingefroren, daemon=True)
+    th.start()
+    try:
+        assert gehalten.wait(10)
+        with monkeypatch.context() as m:
+            m.setattr(W._Stamped, "WAIT_WHILE_FINALIZING_S", 0.05)
+            m.setattr(W.sys, "is_finalizing", lambda: True)
+            assert st.write("beim Beenden\n") == len("beim Beenden\n")
+            st.flush()
+    finally:
+        loslassen.set()
+        th.join(10)
+        st._fh.close()
+    assert "beim Beenden" not in pfad.read_text(encoding="utf-8")
 
 
 # --- App: Verwerfen und Umschalt-Modus ---------------------------------------------------------
@@ -268,6 +455,20 @@ def test_umschalten_meldet_sich_englisch_in_der_konsole(monkeypatch, capsys):
     zeilen = capsys.readouterr().out.splitlines()
     assert zeilen == ["[app] translation on - everything is translated into Italian.",
                       "[app] UI language: de (setting: de)"]
+
+
+def test_clean_text_nennt_eine_unklare_sprache_englisch(monkeypatch, capsys):
+    """Arbeitspaket 9: in der sonst englischen Zeile stand "(unklar)". Ohne Ollama und Whisper:
+    Pipeline ist eine Attrappe, der Text ist fuer den DE/EN-Pruefer zu kurz (-> unklar)."""
+    class _Pipeline:
+        def __init__(self, cfg):
+            self.cleaner = types.SimpleNamespace(warmup=lambda: True, clean=lambda t, kat, sprache: (t, False))
+            self.aliases = types.SimpleNamespace(fix=lambda t: (t, []))
+
+    monkeypatch.setattr(W, "Pipeline", _Pipeline)
+    assert W.cmd_clean_text({}, "ok") == 0
+    out = capsys.readouterr().out
+    assert "Language: (unclear)" in out and "unklar" not in out
 
 
 _START_STOP = ("start-whisperflow.bat", "stop-whisperflow.bat", "testen-konsole.bat")

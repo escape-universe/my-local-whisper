@@ -6,7 +6,7 @@ Ablauf (Konsole):
   2. Rechte Strg halten, die Begriffe der Reihe nach vorlesen (gern in einem Satz), loslassen.
   3. Es zeigt das ROHE Whisper-Ergebnis (ohne LLM) und markiert je Begriff: TREFFER / FEHLT.
      Fuer jeden fehlenden Begriff schlaegt es das aehnlichste gehoerte Wort als Alias vor.
-  4. Du antwortest je Vorschlag: j (uebernehmen) / n (nicht) / eigene Schreibweise eintippen.
+  4. Du antwortest je Vorschlag: j/ja/y/yes (uebernehmen) / n/nein/no (nicht) / eigene Schreibweise eintippen.
      Bestaetigte Aliase landen sofort in aliases.txt (ab dem naechsten App-Start aktiv).
   5. Enter = naechste Runde, q = Ende. Protokoll: calibration/kalibrierung-JJJJ-MM-TT.md
 
@@ -77,6 +77,25 @@ def _append_alias(path: Path, target: str, variant: str) -> bool:
     lines.append(f"{target} = {variant}")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return True
+
+
+_JA = {"j", "ja", "y", "yes"}
+_NEIN = {"", "n", "nein", "no"}
+
+
+def _antwort_auswerten(antwort: str, vorschlag: str | None) -> str | None:
+    """Antwort auf eine Alias-Rueckfrage -> die Schreibweise, die gespeichert wird, oder None.
+
+    j/ja/y/yes (Gross/Klein egal) = den Vorschlag uebernehmen (None, wenn es keinen gibt);
+    n/nein/no oder leer = nichts speichern; alles andere = eigene Schreibweise wie bisher.
+    Arbeitspaket 9 (25.09.2026): bis dahin galt nur "j" als Ja - wer "y" tippte, legte "y" als
+    Schreibweise an statt den Vorschlag zu uebernehmen."""
+    a = antwort.strip()
+    if a.lower() in _JA:
+        return vorschlag or None
+    if a.lower() in _NEIN:
+        return None
+    return a
 
 
 def section_terms(cfg: dict, name: str) -> list[str]:
@@ -163,17 +182,12 @@ def run_calibration(cfg: dict, nur: str = "") -> int:
             misses += 1
             cand = _closest(term, raw)
             if cand and _norm(cand) != _norm(term):
-                ans = input(f"   ✘ {term} fehlt. Gehoert: {cand!r}. Alias '{term} = {cand}' uebernehmen? [j/n/eigene]: ").strip()
+                ans = input(f"   ✘ {term} fehlt. Gehoert: {cand!r}. Alias '{term} = {cand}' uebernehmen? "
+                            f"[j/y = ja/yes, n = nein/no, oder richtige Schreibweise]: ").strip()
             else:
                 ans = input(f"   ✘ {term} fehlt, kein aehnliches Wort gefunden. Gehoerte Variante eintippen (leer = ueberspringen): ").strip()
                 cand = None
-            variant = None
-            if ans.lower() == "j" and cand:
-                variant = cand
-            elif ans.lower() in ("", "n"):
-                variant = None
-            else:
-                variant = ans
+            variant = _antwort_auswerten(ans, cand)
             if variant and _append_alias(alias_path, term, variant):
                 fixer = aliases_mod.AliasFixer(aliases_mod.load_aliases(alias_path))
                 added += 1
