@@ -558,18 +558,32 @@ def test_requirements_gpu_txt_hat_die_nvidia_pakete():
     _zeile("requirements-gpu.txt", "nvidia-cudnn-cu12")
 
 
-def test_run_doctor_laeuft_ohne_absturz_auf_diesem_testrechner(monkeypatch, capsys):
-    """Kriterium: darf auf Linux ohne Absturz laufen (dort FAIL/WARN fuer Windows-Pakete
-    erwartbar). Nur die Ollama-Erreichbarkeit wuerde echtes Netzwerk brauchen (die conftest
-    sperrt das generell) - dafuer eine neutrale Attrappe, der Rest laeuft echt gegen diese
-    Testumgebung (Pakete, config.yaml, dictionary.txt/aliases.txt, GPU, Mikrofon-Attrappe)."""
+@pytest.mark.parametrize("plattform", ["win32", "linux"])
+def test_run_doctor_laeuft_ohne_absturz_auf_diesem_testrechner(monkeypatch, capsys, plattform):
+    """Kriterium: darf ohne Absturz laufen, egal ob als Windows oder als Linux erkannt (auf Linux
+    sind FAIL/WARN fuer die Windows-Pakete erwartbar). Nur die Ollama-Erreichbarkeit wuerde echtes
+    Netzwerk brauchen (die conftest sperrt das generell) - dafuer eine neutrale Attrappe, der Rest
+    laeuft echt gegen diese Testumgebung (Pakete, config.yaml, dictionary.txt/aliases.txt, GPU,
+    Mikrofon-Attrappe).
+
+    Nachbesserung Arbeitspaket 10: bisher hing "[OK] Windows" nicht in out vom Zufall des
+    Testrechners ab (lief nur auf Linux gruen) - auf dem echten windows-latest-CI-Runner ist
+    sys.platform wirklich "win32", _check_os() meldet dort also echt "[OK] Windows", und die feste
+    Erwartung "nicht in out" schlug fehl. Jetzt legt der Test sys.platform selbst fest (wie
+    test_os_windows_ist_ok_sonst_warn oben) und spielt beide Faelle durch, unabhaengig vom
+    tatsaechlichen Testrechner."""
+    monkeypatch.setattr(doctor.sys, "platform", plattform)
     monkeypatch.setattr(doctor, "_check_cleanup_model", lambda cfg: ("warn", "not checked in this test", ""))
     monkeypatch.setattr(doctor, "_check_translate_model", lambda cfg, cleanup_status="": ("warn", "not checked in this test"))
     code = doctor.run_doctor()
     assert code in (0, 1)
     out = capsys.readouterr().out
     assert "[FAIL] Python" not in out                # Python 3.11+ laeuft hier (CI-Matrix)
-    assert "[OK] Windows" not in out                  # laeuft hier auf Linux, nicht Windows
+    if plattform == "win32":
+        assert "[OK] Windows" in out
+    else:
+        assert "[OK] Windows" not in out
+        assert f"[WARN] {plattform} -> only Windows is supported live" in out
 
 
 # --- B1: --doctor darf nicht an genau den Paketen scheitern, die es selbst melden soll ----------

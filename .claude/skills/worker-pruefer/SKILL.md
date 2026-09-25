@@ -150,6 +150,10 @@ Findet einer der beiden einen Blocker:
 
 ### 7. Push und Bericht
 - Gepusht werden nur freigegebene Commits, auf den Branch, den die Sitzung vorgibt.
+- Nach jedem Push den CI-Lauf ansehen (GitHub Actions, alle Jobs der Matrix). Ist er rot, ist das
+  Beheben ein eigenes Arbeitspaket, bevor irgendetwas als fertig gemeldet wird. Eine
+  Windows-Simulation im Container ersetzt den echten Windows-Runner nicht. (Hintergrund: CI war
+  über fünf Pakete rot, weil nur lokal unter Linux geprüft wurde.)
 - Bericht an den Nutzer mit Kurzfassung zuerst, dann eine Tabelle:
 
   | Paket | Worker | Prüfer | Runden | Urteil |

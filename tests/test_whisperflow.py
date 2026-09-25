@@ -775,16 +775,55 @@ def test_verlauf_innerhalb_der_frist_bleibt_unangetastet(verlauf):
     assert _dateien(P.history_path.parent) == ["history.log"]
 
 
-def test_kaputter_verlauf_haelt_das_diktat_nicht_auf(verlauf, capsys):
+def _ohne_crlf(daten: bytes) -> bytes:
+    """\\r\\n -> \\n: _remember() haengt im Textmodus an (kein newline=""), auf Windows also mit
+    os.linesep = \\r\\n statt \\n. Datei-Vergleiche normalisieren deshalb hierueber, statt sich auf
+    das Zeilenende eines bestimmten Betriebssystems festzulegen (Arbeitspaket 10)."""
+    return daten.replace(b"\r\n", b"\n")
+
+
+_ECHTES_PATH_OPEN = Path.open
+
+
+def _oeffnen_wie_windows(self, mode="r", buffering=-1, encoding=None, errors=None, newline=None):
+    """Path.open-Ersatz fuer den CRLF-Fall unten (Nachbesserung Arbeitspaket 10, Runde 1, Blocker
+    B1 des Pruefers). Text-Schreib-/Anhaengemodi ohne eigenes newline-Argument bekommen
+    newline="\\r\\n" - genau das tut Python unter Windows von sich aus (newline=None uebersetzt
+    beim Schreiben jedes \\n in os.linesep, dort \\r\\n). Anders als os.linesep selbst zu
+    monkeypatchen (gepruefte Annahme, wirkt nicht auf Pythons Text-I/O - siehe Bericht) haelt sich
+    open() an ein explizit gesetztes newline, auf jedem Betriebssystem. Der echte, unveraenderte
+    _remember() schreibt in diesem Testlauf damit byte-genau das, was der Windows-CI-Runner
+    tatsaechlich meldet, ohne einen echten Windows-Rechner zu brauchen."""
+    if newline is None and "b" not in mode and any(c in mode for c in "wax+"):
+        newline = "\r\n"
+    return _ECHTES_PATH_OPEN(self, mode, buffering, encoding, errors, newline)
+
+
+@pytest.mark.parametrize("windows_zeilenenden", [False, True], ids=["lf", "crlf-wie-windows"])
+def test_kaputter_verlauf_haelt_das_diktat_nicht_auf(verlauf, capsys, monkeypatch, windows_zeilenenden):
     """Laesst sich der Verlauf nicht lesen (kein UTF-8), meldet das Kuerzen sich in der Konsole,
-    der neue Eintrag steht trotzdem in der Datei und _remember wirft nichts (sonst fiele die
-    Lieferung des Diktats aus, sie kommt in process_audio erst danach)."""
+    der kaputte Altbestand bleibt unveraendert stehen, der neue Eintrag steht trotzdem am Ende der
+    Datei, und _remember wirft nichts (sonst fiele die Lieferung des Diktats aus, sie kommt in
+    process_audio erst danach).
+
+    Nachbesserung Arbeitspaket 10, Runde 1 (Blocker B1 des Pruefers: der vorherige zweite Test rief
+    _remember gar nicht auf und bewies nichts). "crlf-wie-windows" laesst denselben, unveraenderten
+    Testkoerper wie "lf" laufen, nur mit Path.open ersetzt (_oeffnen_wie_windows), sodass _remember()
+    echt im Windows-Textmodus schreibt. Der Bytevergleich (_ohne_crlf) beweist damit in beiden
+    Faellen dieselbe Aussage - unabhaengig vom Zeilenende -, statt nur eine Konstante nachzubauen."""
+    if windows_zeilenenden:
+        monkeypatch.setattr(Path, "open", _oeffnen_wie_windows)
     P, _ = verlauf
     P.history_path.parent.mkdir(parents=True)
-    P.history_path.write_bytes("### 2026-08-01T10:00:00\nB\xfcro\n\n".encode("cp1252"))
+    alter_bestand = "### 2026-08-01T10:00:00\nB\xfcro\n\n".encode("cp1252")
+    P.history_path.write_bytes(alter_bestand)
     P._remember("neu")
     assert "[history] not pruned" in capsys.readouterr().out
-    assert P.history_path.read_bytes().endswith("neu\n\n".encode("utf-8"))
+    daten = P.history_path.read_bytes()
+    assert daten.startswith(alter_bestand)                    # kaputter Altbestand bleibt stehen
+    if windows_zeilenenden:
+        assert b"\r\n" in daten                               # Beleg: die Nachbildung griff wirklich
+    assert _ohne_crlf(daten).endswith(b"neu\n\n")
 
 
 def test_ohne_verlauf_wird_nichts_gekuerzt(verlauf):
