@@ -492,3 +492,40 @@ def test_doctor_subprozess_ohne_kernpakete_stuerzt_nicht_ab():
                             ("requests", "requests"), ("yaml", "PyYAML")):
         assert f"{modul} not importable" in r.stdout and f"pip install {pip_name}" in r.stdout, r.stdout
     assert "[FAIL]" in r.stdout
+
+
+# --- config.local.yaml (Arbeitspaket 7, 25.09.2026) ------------------------------------------------
+_ECHT_CHECK_CONFIG = doctor._check_config          # _alles_gut() ersetzt ihn, diese Tests brauchen ihn echt
+
+
+def _lokal(tmp_path, monkeypatch, inhalt: str):
+    pfad = tmp_path / "config.local.yaml"
+    pfad.write_text(inhalt, encoding="utf-8")
+    monkeypatch.setattr(config_mod, "LOCAL_CONFIG_PATH", pfad)
+
+
+def test_check_config_kaputte_config_local_nennt_datei_und_zeile(tmp_path, monkeypatch):
+    """Nicht "config.yaml unreadable": kaputt ist die eigene Datei, und die Zeile steht dabei."""
+    _lokal(tmp_path, monkeypatch, 'hotkey:\n  key: "f8"\n mode: toggle\n')
+    status, text, cfg = doctor._check_config()
+    assert status == "fail" and cfg is None
+    assert text.startswith("config.local.yaml, line 3, column ") and "config.yaml unreadable" not in text
+    assert "delete it to use config.yaml alone" in text
+
+
+def test_run_doctor_mit_kaputter_config_local_fail_zeile_ohne_traceback(tmp_path, monkeypatch, capsys):
+    _alles_gut(monkeypatch)
+    monkeypatch.setattr(doctor, "_check_config", _ECHT_CHECK_CONFIG)
+    _lokal(tmp_path, monkeypatch, "audio:\n\tinput_device: 2\n")
+    assert doctor.run_doctor() == 1
+    out = capsys.readouterr().out
+    assert "[FAIL] config.local.yaml, line 2, column 1: found character '\\t' that cannot start any token" in out
+    assert "microphone: skipped (config.yaml not loaded)" in out       # die abhaengigen Pruefpunkte
+    assert "Traceback" not in out
+
+
+def test_check_config_nennt_die_eigenen_schluessel_ohne_werte(tmp_path, monkeypatch):
+    _lokal(tmp_path, monkeypatch, 'audio:\n  input_device: "Mein Headset"\n')
+    status, text, cfg = doctor._check_config()
+    assert status == "ok" and cfg["audio"]["input_device"] == "Mein Headset"
+    assert text == "config.yaml readable (config.local.yaml overrides: audio.input_device)"

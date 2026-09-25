@@ -90,10 +90,19 @@ def _check_config() -> tuple[str, str, dict | None]:
         return "fail", "cannot check config.yaml: PyYAML missing (see above)", None
     try:
         from wf import config as config_mod
-        cfg = config_mod.load_config()
     except Exception as e:  # noqa: BLE001
         return "fail", f"config.yaml unreadable ({e})", None
-    return "ok", "config.yaml readable", cfg
+    try:
+        cfg = config_mod.load_config()
+    except config_mod.ConfigError as e:
+        # Arbeitspaket 7 (25.09.2026): ConfigError nennt die Datei (config.yaml ODER
+        # config.local.yaml), die Zeile und die Abhilfe schon selbst - "config.yaml unreadable"
+        # davor waere bei einer kaputten config.local.yaml irrefuehrend.
+        return "fail", str(e), None
+    except Exception as e:  # noqa: BLE001
+        return "fail", f"config.yaml unreadable ({e})", None
+    zusatz = "; ".join(z.removeprefix("[config] ") for z in config_mod.local_summary_lines(cfg))
+    return "ok", "config.yaml readable" + (f" ({zusatz})" if zusatz else ""), cfg
 
 
 def _check_dictionary_files(cfg: dict) -> tuple[str, str]:

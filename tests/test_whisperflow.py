@@ -1,13 +1,20 @@
 """whisperflow.py ohne Modelle: Anhaenge-Entscheidung, Zeitstempel im Protokoll, Verwerfen,
 Umschalt-Modus und die Reihenfolge der Endverarbeitung (Faelle aus selftest.py); dazu die
-Konsolen-Ausgaben beim Umschalten und der sichtbare Produktname in Skripten und Selbsttest."""
+Konsolen-Ausgaben beim Umschalten und der sichtbare Produktname in Skripten und Selbsttest.
+Seit Arbeitspaket 7: state.json atomar, Verlauf im Dauerbetrieb, Tray-Einstellungen und Autostart,
+Windows-Meldung und der Start in main() (eine Instanz, kaputte Einstellungen). Die Aufnahmen selbst
+(Abschnitte je Aufnahme) stehen in tests/test_aufnahmen.py."""
 from __future__ import annotations
 
+import ctypes
 import io
 import re
+import subprocess
+import sys
 import threading
 import time
 import types
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -314,6 +321,16 @@ def test_snip_startzeile_beschriftet_den_aktiven_namen_nicht_den_rohwert():
     assert "key_label(self.snip_key)" not in quelle
 
 
+def test_startzeilen_nennen_die_wirksame_diktat_taste():
+    """Arbeitspaket 7: nach einem unbekannten hotkey.key warnt HoldToTalk und hoert auf ctrl_r - die
+    Startzeile von App.run() und die Kalibrier-Anleitung duerfen dann nicht den Tippfehler nennen.
+    App.run() laedt Modelle, deshalb wie oben die Quelltext-Pruefung."""
+    quelle = Path(W.__file__).read_text(encoding="utf-8")
+    assert "[app] ready. '{hk.key_name}'" in quelle and "[app] ready. '{key}'" not in quelle
+    kalibrierung = (Path(W.__file__).parent / "calibrate.py").read_text(encoding="utf-8")
+    assert "Hold '{hk.key_name}'" in kalibrierung and "Hold '{key}'" not in kalibrierung
+
+
 # --- do_snip()/do_fullscreen() Ende-zu-Ende (Nachbesserung Runde 1, B3) -------------------------
 # Kriterium 7/8 wurden bisher nur an den Bausteinen geprueft (encode_png, save_image_async,
 # wants_all_monitors), nie am tatsaechlichen Aufruf in do_snip()/do_fullscreen() selbst - genau
@@ -436,3 +453,339 @@ def test_do_fullscreen_monitor_schneidet_zu(tmp_path, monkeypatch):
     [datei] = list(tmp_path.glob("*.png"))
     with Image.open(datei) as geladen:
         assert geladen.size == (10, 8)                  # auf den (gefaelschten) Monitor zugeschnitten
+
+
+# --- state.json atomar (Arbeitspaket 7, 25.09.2026) ------------------------------------------------
+@pytest.fixture
+def zustand(tmp_path, monkeypatch) -> Path:
+    pfad = tmp_path / "state.json"
+    monkeypatch.setattr(W, "STATE_PATH", pfad)
+    return pfad
+
+
+def _dateien(ordner: Path) -> list[str]:
+    return sorted(p.name for p in ordner.iterdir())
+
+
+def test_state_json_schreiben_und_lesen_ohne_zwischendatei(zustand):
+    W._save_state({"toggle_mode": True, "ui_lang": "de"})
+    W._save_state({"toggle_mode": False, "ui_lang": "it"})          # ersetzt die vorhandene Datei
+    assert W._load_state() == {"toggle_mode": False, "ui_lang": "it"}
+    assert _dateien(zustand.parent) == ["state.json"]
+
+
+def test_fehler_mitten_im_schreiben_laesst_die_alte_datei_heil(zustand, capsys):
+    """Ein Wert, den UTF-8 nicht kodieren kann (einzelnes Surrogat), laesst das Schreiben MITTEN
+    im Vorgang scheitern - wie ein Absturz beim Schreiben. Bis 25.09.2026 (write_text) war die
+    Datei in dem Moment schon geleert: danach leer, _load_state() gab still {} zurueck."""
+    W._save_state({"toggle_mode": True, "ui_lang": "de"})
+    alt = zustand.read_bytes()
+    W._save_state({"toggle_mode": True, "ui_lang": "\ud800"})
+    assert zustand.read_bytes() == alt
+    assert W._load_state() == {"toggle_mode": True, "ui_lang": "de"}
+    assert "[state] not saved" in capsys.readouterr().out
+    assert _dateien(zustand.parent) == ["state.json"]                 # keine Zwischendatei liegen geblieben
+
+
+def test_scheitert_das_ersetzen_bleibt_die_alte_datei(zustand, monkeypatch, capsys):
+    """Zum Beispiel haelt ein anderes Programm state.json gerade offen (Windows: kein Ersetzen)."""
+    W._save_state({"ui_lang": "de"})
+
+    def gesperrt(quelle, ziel):
+        raise PermissionError("Datei in Benutzung")
+
+    monkeypatch.setattr(W.os, "replace", gesperrt)
+    W._save_state({"ui_lang": "ru"})
+    assert W._load_state() == {"ui_lang": "de"}
+    assert "Datei in Benutzung" in capsys.readouterr().out
+    assert _dateien(zustand.parent) == ["state.json"]
+
+
+def test_ersetzen_passiert_erst_nach_vollstaendigem_schreiben(zustand, monkeypatch):
+    """Reihenfolge: temporaere Datei komplett geschrieben und auf der Platte (fsync), erst dann
+    os.replace - im selben Ordner wie state.json."""
+    ablauf = []
+    echt_fsync, echt_replace = W.os.fsync, W.os.replace
+    monkeypatch.setattr(W.os, "fsync", lambda fd: (ablauf.append("fsync"), echt_fsync(fd))[1])
+
+    def ersetzen(quelle, ziel):
+        ablauf.append(("replace", Path(quelle).parent == Path(ziel).parent,
+                       Path(quelle).read_text(encoding="utf-8")))
+        echt_replace(quelle, ziel)
+
+    monkeypatch.setattr(W.os, "replace", ersetzen)
+    W._save_state({"toggle_mode": True})
+    assert ablauf == ["fsync", ("replace", True, '{\n "toggle_mode": true\n}')]
+
+
+# --- Verlauf im Dauerbetrieb (Arbeitspaket 7, 25.09.2026) --------------------------------------------
+class _Uhr(datetime):
+    """Kuenstliche Uhr fuer whisperflow.datetime: now() liefert _Uhr.jetzt."""
+    jetzt = datetime(2026, 9, 1, 9, 0, 0)
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls.jetzt
+
+
+@pytest.fixture
+def verlauf(tmp_path, monkeypatch):
+    """Pipeline ohne Modelle mit Verlauf in tmp_path (14 Tage), die Uhr steht auf dem 01.09.2026."""
+    monkeypatch.setattr(W, "datetime", _Uhr)
+    monkeypatch.setattr(_Uhr, "jetzt", datetime(2026, 9, 1, 9, 0, 0))
+    P = W.Pipeline.__new__(W.Pipeline)
+    P.history_path = tmp_path / "data" / "history.log"
+    P._ui = {"history_keep_days": 14}
+    P._history_pruned_on = None
+    P._history_lock = threading.Lock()
+    gekuerzt: list = []
+    echt = P._prune_history
+    P._prune_history = lambda: (gekuerzt.append(_Uhr.jetzt), echt())[1]
+    return P, gekuerzt
+
+
+def test_verlauf_wird_im_dauerbetrieb_gekuerzt_hoechstens_einmal_am_tag(verlauf):
+    P, gekuerzt = verlauf
+    P._prune_history()                                       # Start (warmup) am 01.09.
+    P._remember("erster Tag morgens")
+    _Uhr.jetzt = datetime(2026, 9, 1, 18, 0)
+    P._remember("erster Tag abends")
+    assert len(gekuerzt) == 1                                # derselbe Tag: Datei nicht noch mal gelesen
+    _Uhr.jetzt = datetime(2026, 9, 16, 8, 0)                 # App lief durch, 15 Tage spaeter
+    P._remember("Tag 16")
+    assert gekuerzt[1:] == [datetime(2026, 9, 16, 8, 0)]
+    text = P.history_path.read_text(encoding="utf-8")
+    assert "erster Tag" not in text                          # aelter als 14 Tage: weg
+    assert text == "### 2026-09-16T08:00:00\nTag 16\n\n"
+    _Uhr.jetzt = datetime(2026, 9, 16, 23, 59)
+    P._remember("Tag 16 spaet")
+    assert len(gekuerzt) == 2                                # am 16.09. kein zweites Mal
+    assert P.last_text() == "Tag 16 spaet"
+
+
+def test_verlauf_innerhalb_der_frist_bleibt_unangetastet(verlauf):
+    P, gekuerzt = verlauf
+    P._remember("frisch")
+    _Uhr.jetzt = datetime(2026, 9, 10, 12, 0)                # neuer Tag, aber nichts ist abgelaufen
+    P._remember("auch frisch")
+    assert len(gekuerzt) == 2
+    assert P.history_path.read_text(encoding="utf-8") == (
+        "### 2026-09-01T09:00:00\nfrisch\n\n### 2026-09-10T12:00:00\nauch frisch\n\n")
+    assert _dateien(P.history_path.parent) == ["history.log"]
+
+
+def test_kaputter_verlauf_haelt_das_diktat_nicht_auf(verlauf, capsys):
+    """Laesst sich der Verlauf nicht lesen (kein UTF-8), meldet das Kuerzen sich in der Konsole,
+    der neue Eintrag steht trotzdem in der Datei und _remember wirft nichts (sonst fiele die
+    Lieferung des Diktats aus, sie kommt in process_audio erst danach)."""
+    P, _ = verlauf
+    P.history_path.parent.mkdir(parents=True)
+    P.history_path.write_bytes("### 2026-08-01T10:00:00\nB\xfcro\n\n".encode("cp1252"))
+    P._remember("neu")
+    assert "[history] not pruned" in capsys.readouterr().out
+    assert P.history_path.read_bytes().endswith("neu\n\n".encode("utf-8"))
+
+
+def test_ohne_verlauf_wird_nichts_gekuerzt(verlauf):
+    P, gekuerzt = verlauf
+    P.history_path = None
+    P._remember("x")
+    assert gekuerzt == []
+
+
+# --- Tray -> Einstellungen / Mit Windows starten (Arbeitspaket 7, 25.09.2026) -----------------------
+class _TrayMeldungen:
+    def __init__(self):
+        self.meldungen: list[str] = []
+
+    def notify(self, message, title="my-local-whisper"):
+        self.meldungen.append(message)
+
+
+@pytest.fixture
+def einstellungen(tmp_path, monkeypatch):
+    """config.local.yaml in tmp_path, os.startfile/notepad ersetzt (nie echt aufrufen)."""
+    monkeypatch.setattr(i18n, "_current", "en")
+    lokal = tmp_path / "config.local.yaml"
+    monkeypatch.setattr(W.config_mod, "LOCAL_CONFIG_PATH", lokal)
+    geoeffnet: list = []
+    monkeypatch.setattr(W.os, "startfile", lambda pfad: geoeffnet.append(("startfile", pfad)), raising=False)
+    monkeypatch.setattr(subprocess, "Popen", lambda args: geoeffnet.append(("popen", args)))
+    tray = _TrayMeldungen()
+    return _app(tray=tray), lokal, geoeffnet, tray
+
+
+def test_einstellungen_legt_aus_der_vorlage_an_oeffnet_und_sagt_neu_starten(einstellungen):
+    app, lokal, geoeffnet, tray = einstellungen
+    app._open_settings()
+    assert lokal.read_text(encoding="utf-8") == W.config_mod.LOCAL_EXAMPLE_PATH.read_text(encoding="utf-8")
+    assert geoeffnet == [("startfile", str(lokal))]
+    assert tray.meldungen == [i18n.t("note_settings_restart", file="config.local.yaml")]
+    assert "restart" in tray.meldungen[0]
+
+
+def test_einstellungen_ueberschreibt_die_eigene_datei_nie(einstellungen):
+    app, lokal, geoeffnet, tray = einstellungen
+    lokal.write_text("hotkey:\n  key: f8\n", encoding="utf-8")
+    assert app.open_settings() == ""
+    assert lokal.read_text(encoding="utf-8") == "hotkey:\n  key: f8\n"
+
+
+def test_einstellungen_ohne_verknuepfung_fuer_yaml_oeffnet_notepad(einstellungen, monkeypatch):
+    app, lokal, geoeffnet, tray = einstellungen
+
+    def keine_verknuepfung(pfad):
+        raise OSError("[WinError 1155] No application is associated with the specified file")
+
+    monkeypatch.setattr(W.os, "startfile", keine_verknuepfung, raising=False)
+    assert app.open_settings() == ""
+    assert geoeffnet == [("popen", ["notepad.exe", str(lokal)])]
+
+
+def test_einstellungen_nicht_zu_oeffnen_wird_eine_meldung(einstellungen, monkeypatch):
+    app, lokal, geoeffnet, tray = einstellungen
+    monkeypatch.delattr(W.os, "startfile", raising=False)            # wie ohne Windows
+
+    def kein_notepad(args):
+        raise FileNotFoundError("notepad.exe nicht gefunden")
+
+    monkeypatch.setattr(subprocess, "Popen", kein_notepad)
+    app._open_settings()
+    assert tray.meldungen == [i18n.t("note_settings_open_failed", error="notepad.exe nicht gefunden")]
+
+
+def test_einstellungen_ordner_nicht_beschreibbar_wird_eine_meldung(einstellungen, monkeypatch):
+    app, lokal, geoeffnet, tray = einstellungen
+
+    def schreibgeschuetzt(*a, **kw):
+        raise PermissionError("schreibgeschuetzt")
+
+    monkeypatch.setattr(W.config_mod, "ensure_local_config", schreibgeschuetzt)
+    assert app.open_settings() == i18n.t("note_settings_open_failed", error="schreibgeschuetzt")
+    assert geoeffnet == []
+
+
+@pytest.mark.parametrize("an, grund, schluessel", [
+    (True, "", "note_autostart_on"), (False, "", "note_autostart_off"),
+    (True, "Zugriff verweigert", "note_autostart_failed")])
+def test_autostart_umschalten_meldet_sich_im_tray(monkeypatch, capsys, an, grund, schluessel):
+    monkeypatch.setattr(i18n, "_current", "de")
+    gerufen = []
+    monkeypatch.setattr(W.autostart_mod, "set_enabled", lambda on: (gerufen.append(on), grund)[1])
+    tray = _TrayMeldungen()
+    _app(tray=tray)._set_autostart(an)
+    assert gerufen == [an]
+    assert tray.meldungen == [i18n.t(schluessel, error=grund)]
+    assert capsys.readouterr().out.startswith("[autostart] ")
+
+
+# --- Windows-Meldung ohne Tray (zweiter Start, kaputte Einstellungen) ---------------------------------
+def test_message_box_ruft_messageboxw(monkeypatch):
+    aufrufe = []
+    user32 = types.SimpleNamespace(MessageBoxW=lambda *args: aufrufe.append(args) or 1)
+    monkeypatch.setattr(ctypes, "windll", types.SimpleNamespace(user32=user32), raising=False)
+    W._message_box("Hallo")
+    W._message_box("Kaputt", error=True)
+    assert [a[:3] for a in aufrufe] == [(None, "Hallo", "my-local-whisper"), (None, "Kaputt", "my-local-whisper")]
+    assert aufrufe[0][3] & 0x40 and not aufrufe[0][3] & 0x10          # Info-Symbol (mit Ton)
+    assert aufrufe[1][3] & 0x10                                        # Fehler-Symbol
+    assert all(a[3] & 0x40000 for a in aufrufe)                        # vor allen Fenstern
+
+
+def test_message_box_ohne_windows_still(monkeypatch):
+    monkeypatch.delattr(ctypes, "windll", raising=False)
+    W._message_box("Hallo")                                            # kein Fehler
+
+
+# --- main(): nur eine Instanz, nur beim normalen Start, vor den Modellen ---------------------------
+@pytest.fixture
+def start(monkeypatch, capsys):
+    """main() ohne echte App und ohne Windows. ablauf haelt fest, was in welcher Reihenfolge
+    geschah; frei["wert"] ist, was instance.acquire() sagt."""
+    monkeypatch.setattr(i18n, "_current", "en")
+    ablauf: list = []
+    frei = {"wert": True, "zustand": {"ui_lang": "en"}}
+    monkeypatch.setattr(W, "_load_state", lambda: dict(frei["zustand"]))
+    monkeypatch.setattr(W, "_message_box", lambda text, error=False: ablauf.append(("meldung", text, error)))
+    monkeypatch.setattr(W.instance_mod, "acquire", lambda: (ablauf.append("acquire"), frei["wert"])[1])
+
+    class _App:
+        """Steht fuer die echte App: deren __init__ baut Whisper und das Aufraeum-Modell."""
+
+        def __init__(self, cfg, use_tray=True):
+            ablauf.append(("App", use_tray, cfg["hotkey"]["key"]))
+
+        def run(self):
+            ablauf.append("run")
+
+    monkeypatch.setattr(W, "App", _App)
+
+    def starten(*argv) -> int:
+        monkeypatch.setattr(sys, "argv", ["whisperflow.py", *argv])
+        return W.main()
+
+    return starten, ablauf, frei
+
+
+def test_normaler_start_prueft_die_instanz_vor_der_app(start):
+    starten, ablauf, _ = start
+    assert starten() == 0
+    assert ablauf == ["acquire", ("App", True, "ctrl_r"), "run"]
+    ablauf.clear()
+    assert starten("--no-tray") == 0
+    assert ablauf == ["acquire", ("App", False, "ctrl_r"), "run"]
+
+
+@pytest.mark.parametrize("sprache", ["en", "de"])
+def test_zweiter_start_beendet_sich_sofort_ohne_modelle(start, capsys, sprache):
+    starten, ablauf, frei = start
+    frei["wert"] = False
+    frei["zustand"] = {"ui_lang": sprache}
+    assert starten() == 0
+    assert ablauf == ["acquire", ("meldung", i18n.TABLE[sprache]["note_already_running"], False)]
+    assert "already running" in capsys.readouterr().out
+
+
+def test_werkzeug_aufrufe_pruefen_keine_instanz(start, monkeypatch):
+    starten, ablauf, _ = start
+    import calibrate
+    import selftest
+
+    from wf import doctor
+    monkeypatch.setattr(W.audio_mod, "list_devices", lambda: "keine Geraete")
+    monkeypatch.setattr(doctor, "run_doctor", lambda: ablauf.append("doctor") or 0)
+    monkeypatch.setattr(selftest, "run_selftests", lambda: ablauf.append("selftest") or 0)
+    monkeypatch.setattr(calibrate, "run_calibration", lambda cfg, nur: ablauf.append("calibrate") or 0)
+    monkeypatch.setattr(W, "cmd_clean_text", lambda cfg, text: ablauf.append("clean-text") or 0)
+    monkeypatch.setattr(W, "cmd_transcribe_file", lambda cfg, pfad: ablauf.append("transcribe-file") or 0)
+    for argv in (["--list-devices"], ["--doctor"], ["--selftest"], ["--calibrate"],
+                 ["--clean-text", "hallo"], ["--transcribe-file", "x.wav"]):
+        assert starten(*argv) == 0, argv
+    assert ablauf == ["doctor", "selftest", "calibrate", "clean-text", "transcribe-file"]
+
+
+def test_start_nennt_die_eigenen_schluessel_und_nimmt_ihre_werte(start, tmp_path, monkeypatch, capsys):
+    starten, ablauf, _ = start
+    lokal = tmp_path / "config.local.yaml"
+    lokal.write_text('hotkey:\n  key: "f8"\naudio:\n  input_device: "Geheimes Headset"\n', encoding="utf-8")
+    monkeypatch.setattr(W.config_mod, "LOCAL_CONFIG_PATH", lokal)
+    assert starten() == 0
+    assert ablauf == ["acquire", ("App", True, "f8"), "run"]
+    out = capsys.readouterr().out
+    assert "[config] config.local.yaml overrides: hotkey.key, audio.input_device" in out
+    assert "Geheimes Headset" not in out
+
+
+@pytest.mark.parametrize("argv", [[], ["--selftest"], ["--calibrate"]])
+def test_kaputte_config_local_klare_meldung_statt_absturz(start, tmp_path, monkeypatch, capsys, argv):
+    starten, ablauf, _ = start
+    lokal = tmp_path / "config.local.yaml"
+    lokal.write_text('hotkey:\n  key: "f8"\n mode: toggle\n', encoding="utf-8")
+    monkeypatch.setattr(W.config_mod, "LOCAL_CONFIG_PATH", lokal)
+    assert starten(*argv) == 2
+    out = capsys.readouterr().out
+    assert "[config] ERROR: config.local.yaml, line 3, column" in out
+    [(art, text, fehler)] = ablauf                                  # keine Instanzpruefung, keine App
+    assert art == "meldung" and fehler is True
+    assert text.startswith(i18n.TABLE["en"]["note_config_unreadable"].split("{error}")[0])
+    assert "config.local.yaml, line 3" in text

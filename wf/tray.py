@@ -53,7 +53,10 @@ class Tray:
                  on_open_log: Callable[[], None] | None = None,
                  on_open_images: Callable[[], None] | None = None,
                  on_set_ui_language: Callable[[str], None] | None = None,
-                 ui_language: str = "auto"):
+                 ui_language: str = "auto",
+                 on_open_settings: Callable[[], None] | None = None,
+                 on_set_autostart: Callable[[bool], None] | None = None,
+                 autostart_enabled: Callable[[], bool] | None = None):
         import pystray
         self._pystray = pystray
         self._enabled = True
@@ -66,6 +69,9 @@ class Tray:
         self._on_open_log = on_open_log
         self._on_open_images = on_open_images
         self._on_set_ui_language = on_set_ui_language
+        self._on_open_settings = on_open_settings
+        self._on_set_autostart = on_set_autostart
+        self._autostart_enabled = autostart_enabled
         self._ui_language = ui_language      # "auto" oder ein Code aus i18n.LANGUAGES
         self._translate_to = ""      # "" = aus; beim Start immer aus (Entscheidung 08.09.2026)
         self._state = "idle"
@@ -101,6 +107,13 @@ class Tray:
             # Bilder oeffnen (10.09.2026): der Schnellspeicher der Ausschnitte, gleiche Logik.
             pystray.MenuItem(lambda i: i18n.t("menu_open_images"), self._open_images),
             pystray.Menu.SEPARATOR,
+            # Arbeitspaket 7 (25.09.2026): eigene Einstellungen in config.local.yaml, die ein
+            # git pull nicht anfasst, und der Autostart. Der Haken fragt bei jedem Aufbau des
+            # Menues nach, ob die Verknuepfung wirklich existiert (nicht einen gemerkten Zustand).
+            pystray.MenuItem(lambda i: i18n.t("menu_settings"), self._open_settings),
+            pystray.MenuItem(lambda i: i18n.t("menu_autostart"), self._autostart_click,
+                             checked=lambda i: self._autostart_on()),
+            pystray.Menu.SEPARATOR,
             pystray.MenuItem(lambda i: i18n.t("menu_quit"), self._quit),
         ]
         self._icon = pystray.Icon(
@@ -128,6 +141,26 @@ class Tray:
     def _open_images(self, icon, item):  # noqa: ARG002
         if self._on_open_images:
             self._on_open_images()
+
+    def _open_settings(self, icon, item):  # noqa: ARG002
+        if self._on_open_settings:
+            self._on_open_settings()
+
+    def _autostart_on(self) -> bool:
+        if not self._autostart_enabled:
+            return False
+        try:
+            return bool(self._autostart_enabled())
+        except Exception:  # noqa: BLE001 - ein Haken darf das Menue nie zerlegen
+            return False
+
+    def _autostart_click(self, icon, item):  # noqa: ARG002
+        if self._on_set_autostart:
+            self._on_set_autostart(not self._autostart_on())
+        try:                          # Haken nach dem tatsaechlichen Stand neu zeichnen
+            self._icon.update_menu()
+        except Exception:  # noqa: BLE001
+            pass
 
     def _make_ui_lang_click(self, setting: str):
         def _click(icon, item):  # noqa: ARG002

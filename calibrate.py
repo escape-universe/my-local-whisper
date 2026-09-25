@@ -138,7 +138,7 @@ def run_calibration(cfg: dict, nur: str = "") -> int:
         fh.write(f"\n## Lauf {time.strftime('%H:%M')} — Modell {tr.model_size}\n\n")
     per_round = 6
     rounds = [terms[i:i + per_round] for i in range(0, len(terms), per_round)]
-    print(f"\n=== Calibration: {len(terms)} terms in {len(rounds)} rounds. Hold '{key}' and read the "
+    print(f"\n=== Calibration: {len(terms)} terms in {len(rounds)} rounds. Hold '{hk.key_name}' and read the "
           f"terms out loud (a sentence is fine). Enter = next, q = quit ===\n")
     hits = misses = added = 0
     for ri, batch in enumerate(rounds, 1):

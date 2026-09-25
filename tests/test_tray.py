@@ -4,7 +4,8 @@ Zielsprache, Zusatz. Reine Funktion, extra dafuer aus set_state() herausgezogen 
 englische Zustandswort, unuebersetzt, auch in der deutschen Oberflaeche.
 
 Der Menue-Aufbau selbst (Beschriftungen, Haken, Klicks) steht schon in tests/test_attrappen.py
-(test_tray_menue_laesst_sich_auslesen_und_klicken); hier nur der Tooltip."""
+(test_tray_menue_laesst_sich_auslesen_und_klicken); hier der Tooltip und die Eintraege aus
+Arbeitspaket 7 ("Einstellungen", "Mit Windows starten")."""
 from __future__ import annotations
 
 import pytest
@@ -122,3 +123,74 @@ def test_sprachwechsel_aktualisiert_den_tooltip_sofort(attrappen, monkeypatch):
 
     assert i18n.current() == "de"
     assert t._icon.title == f"my-local-whisper - {i18n.TABLE['de']['tooltip_state_idle']}"
+
+
+# --- Einstellungen und Autostart im Menue (Arbeitspaket 7, 25.09.2026) ---------------------------
+def _eintrag(t, text):
+    return next(m for m in t._icon.menu.items if m.text == text)
+
+
+def test_menue_hat_einstellungen_und_autostart_vor_beenden(attrappen):
+    if "pystray" not in attrappen:
+        pytest.skip("echtes pystray installiert")
+    t = tray.Tray(lambda on: None, lambda: None)
+    texte = [m.text for m in t._icon.menu.items]
+    assert texte[-5:] == ["- - - -", "Settings", "Start with Windows", "- - - -", "Quit"]
+    assert _eintrag(t, "Start with Windows").checked is False     # ohne Rueckfrage: kein Haken
+    _eintrag(t, "Settings")(t._icon)                                # ohne Rueckruf: kein Absturz
+    _eintrag(t, "Start with Windows")(t._icon)
+
+
+@pytest.mark.parametrize("code", [c for c, _ in i18n.LANGUAGES])
+def test_neue_eintraege_in_jeder_sprache(code, attrappen, monkeypatch):
+    if "pystray" not in attrappen:
+        pytest.skip("echtes pystray installiert")
+    monkeypatch.setattr(i18n, "_current", code)
+    t = tray.Tray(lambda on: None, lambda: None)
+    texte = [m.text for m in t._icon.menu.items]
+    assert i18n.TABLE[code]["menu_settings"] in texte and i18n.TABLE[code]["menu_autostart"] in texte
+
+
+def test_einstellungen_klick_ruft_die_app(attrappen):
+    if "pystray" not in attrappen:
+        pytest.skip("echtes pystray installiert")
+    aufrufe = []
+    t = tray.Tray(lambda on: None, lambda: None, on_open_settings=lambda: aufrufe.append("einstellungen"))
+    _eintrag(t, "Settings")(t._icon)
+    assert aufrufe == ["einstellungen"]
+
+
+def test_autostart_haken_zeigt_den_echten_stand_und_schaltet_um(attrappen):
+    """Der Haken fragt autostart_enabled (gibt es die Verknuepfung?), ein Klick schaltet auf das
+    Gegenteil und zeichnet das Menue neu."""
+    if "pystray" not in attrappen:
+        pytest.skip("echtes pystray installiert")
+    stand = {"an": False}
+    geschaltet = []
+
+    def schalten(an):
+        geschaltet.append(an)
+        stand["an"] = an
+
+    t = tray.Tray(lambda on: None, lambda: None, on_set_autostart=schalten,
+                  autostart_enabled=lambda: stand["an"])
+    eintrag = _eintrag(t, "Start with Windows")
+    assert eintrag.checked is False
+    eintrag(t._icon)
+    assert geschaltet == [True] and eintrag.checked is True
+    vorher = t._icon.menu_updates
+    stand["an"] = False                              # Verknuepfung von aussen geloescht
+    assert eintrag.checked is False                  # kein gemerkter Zustand
+    eintrag(t._icon)
+    assert geschaltet == [True, True] and t._icon.menu_updates == vorher + 1
+
+
+def test_autostart_haken_bei_fehler_in_der_abfrage_aus(attrappen):
+    if "pystray" not in attrappen:
+        pytest.skip("echtes pystray installiert")
+
+    def kaputt():
+        raise OSError("kein Zugriff")
+
+    t = tray.Tray(lambda on: None, lambda: None, autostart_enabled=kaputt)
+    assert _eintrag(t, "Start with Windows").checked is False

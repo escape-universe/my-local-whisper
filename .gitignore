@@ -2,6 +2,13 @@
 data/
 calibration/
 state.json
+# Zwischendatei beim atomaren Schreiben von state.json (bleibt nur nach einem Absturz liegen)
+state.json.*.tmp
+
+# Eigene Einstellungen, die ein git pull nicht anfasst (Vorlage: config.local.example.yaml)
+config.local.yaml
+dictionary.local.txt
+aliases.local.txt
 
 # Python
 __pycache__/

@@ -10,9 +10,10 @@ import pytest
 
 from wf import i18n
 
-ALLE_MODULE = ["wf.aliases", "wf.audio", "wf.cleanup", "wf.config", "wf.context", "wf.doctor",
-               "wf.fidelity", "wf.focus", "wf.hotkey", "wf.i18n", "wf.inject", "wf.lang",
-               "wf.overlay", "wf.snip", "wf.stt", "wf.tray", "whisperflow", "calibrate"]
+ALLE_MODULE = ["wf.aliases", "wf.audio", "wf.autostart", "wf.cleanup", "wf.config", "wf.context",
+               "wf.doctor", "wf.fidelity", "wf.focus", "wf.hotkey", "wf.i18n", "wf.inject",
+               "wf.instance", "wf.lang", "wf.overlay", "wf.snip", "wf.stt", "wf.tray", "whisperflow",
+               "calibrate"]
 
 
 @pytest.mark.parametrize("name", ALLE_MODULE)
@@ -113,7 +114,8 @@ def test_tray_menue_laesst_sich_auslesen_und_klicken(attrappen, monkeypatch):
     menue = t._icon.menu.items
     assert [m.text for m in menue] == [
         "Active", "Toggle mode (press once = on, again = off)", "Translate into", "Language",
-        "Copy last text to clipboard", "Open the log", "Open the images", "- - - -", "Quit"]
+        "Copy last text to clipboard", "Open the log", "Open the images", "- - - -",
+        "Settings", "Start with Windows", "- - - -", "Quit"]
     uebersetzen = menue[2].submenu.items
     assert [m.text for m in uebersetzen] == ["Off (keep my language)"] + [n for _, n in lang.TARGETS]
     assert [m.checked for m in uebersetzen] == [True, False, False, False, False, False]

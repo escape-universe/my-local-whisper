@@ -32,6 +32,8 @@ if __name__ == "__main__" and "--doctor" in sys.argv[1:]:
 
 import argparse
 import json
+import os
+import tempfile
 import threading
 import time
 from datetime import datetime, timedelta
@@ -42,12 +44,14 @@ import numpy as np
 
 from wf import aliases as aliases_mod
 from wf import audio as audio_mod
+from wf import autostart as autostart_mod
 from wf import cleanup as cleanup_mod
 from wf import config as config_mod
 from wf import context as context_mod
 from wf import focus as focus_mod
 from wf import i18n
 from wf import inject as inject_mod
+from wf import instance as instance_mod
 from wf import lang as lang_mod
 from wf import overlay as overlay_mod
 from wf import snip as snip_mod
@@ -83,6 +87,20 @@ def _beep_sync(kind: str) -> None:
         pass
 
 
+def _message_box(text: str, error: bool = False) -> None:
+    """Kurze Windows-Meldung fuer Faelle ohne Tray-Symbol (Arbeitspaket 7): der zweite Start,
+    wenn schon eine Instanz laeuft, und eine kaputte Einstellungsdatei. Wer ueber pythonw oder
+    den Autostart startet, hat keine Konsole und saehe sonst gar nichts. Das Symbol bringt den
+    passenden Windows-Ton mit. Blockiert, bis man OK klickt: das trifft nur den Prozess, der
+    sich ohnehin gleich beendet. Ohne Windows: nichts (die Konsolenzeile steht schon da)."""
+    flags = (0x10 if error else 0x40) | 0x10000 | 0x40000   # Fehler/Info-Symbol, SETFOREGROUND, TOPMOST
+    try:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(None, text, "my-local-whisper", flags)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _preview(text: str, n: int = 90) -> str:
     t = " ".join(text.split())
     return t if len(t) <= n else t[: n - 1] + "…"
@@ -95,9 +113,56 @@ def _load_state() -> dict:
         return {}
 
 
-def _save_state(state: dict) -> None:
+def _ui_language_setting(cfg: dict, state: dict) -> str:
+    """Einstellung der Oberflaechensprache: die Tray-Wahl (state.json) vor ui.language, sonst
+    "auto". Auch fuer die Meldungen, bevor es eine App gibt (zweiter Start, main())."""
+    return str(state.get("ui_lang") or (cfg.get("ui") or {}).get("language") or "auto")
+
+
+def _open_in_editor(path: Path) -> str:
+    """Datei im Standardprogramm fuer ihren Typ oeffnen. .yaml hat unter Windows oft keins, dann
+    os.startfile scheitert (OSError), und der Windows-Editor (notepad) oeffnet sie.
+    Rueckgabe: '' = geoeffnet, sonst der Fehler."""
     try:
-        STATE_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
+        os.startfile(str(path))  # type: ignore[attr-defined]  # noqa: S606 - nur Windows
+        return ""
+    except (OSError, AttributeError):
+        pass
+    try:
+        import subprocess
+        subprocess.Popen(["notepad.exe", str(path)])  # noqa: S603, S607
+        return ""
+    except OSError as e:
+        return str(e)
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    """Datei so ersetzen, dass sie nie halb geschrieben ist (Arbeitspaket 7, 25.09.2026): erst eine
+    temporaere Datei im selben Ordner vollstaendig schreiben und auf die Platte bringen, dann per
+    os.replace an ihre Stelle setzen (derselbe Ordner = dasselbe Laufwerk, dort ist das Ersetzen
+    ein einziger Schritt). Scheitert etwas, bleibt die alte Datei, wie sie war, und die temporaere
+    wird entfernt; der Fehler geht an den Aufrufer."""
+    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _save_state(state: dict) -> None:
+    """state.json atomar schreiben. Bis 25.09.2026 direkt (write_text): ein Absturz oder
+    Stromausfall mitten im Schreiben hinterliess eine kaputte Datei, _load_state() gab dann still
+    {} zurueck, und Umschalt-Modus und Oberflaechensprache waren vergessen."""
+    try:
+        _write_atomic(STATE_PATH, json.dumps(state, ensure_ascii=False, indent=1))
     except Exception as e:  # noqa: BLE001
         print(f"[state] not saved: {e}")
 
@@ -132,6 +197,10 @@ class Pipeline:
         self._lock = threading.Lock()
         hist = self._ui.get("history_file")
         self.history_path = (ROOT / hist) if hist else None
+        # Verlauf im Dauerbetrieb (25.09.2026): Tag des letzten Kuerzens (siehe _remember) und eine
+        # Sperre, damit zwei gleichzeitig fertige Diktate nicht in das Neuschreiben hineinschreiben.
+        self._history_pruned_on = None
+        self._history_lock = threading.Lock()
         print(f"[pipeline] dictionary: {len(base_terms)} terms + {len(first_names)} names in the Whisper prompt, "
               f"+{len(llm_only)} clean-up only, {len(self.aliases)} alias rules")
 
@@ -256,14 +325,24 @@ class Pipeline:
     # ---- Verlauf ----
 
     def _remember(self, text: str) -> None:
+        """Eintrag anhaengen. Danach hoechstens einmal pro Kalendertag die Aufbewahrungsfrist
+        anwenden (25.09.2026): bis dahin kuerzte nur der Start (warmup) die Datei. Lief die App
+        wochenlang durch (Autostart), wuchs der Verlauf unbegrenzt, und alte, private Diktate
+        blieben laenger liegen als history_keep_days. Nicht bei jedem Diktat: das hiesse jedes
+        Mal die ganze Datei lesen. Grenze: ohne neues Diktat wird auch nicht gekuerzt."""
         if not self.history_path:
             return
-        try:
-            self.history_path.parent.mkdir(parents=True, exist_ok=True)
-            with self.history_path.open("a", encoding="utf-8") as fh:
-                fh.write(f"### {datetime.now().isoformat(timespec='seconds')}\n{text}\n\n")
-        except Exception as e:  # noqa: BLE001
-            print(f"[history] not written: {e}")
+        with self._history_lock:
+            try:
+                self.history_path.parent.mkdir(parents=True, exist_ok=True)
+                jetzt = datetime.now()
+                with self.history_path.open("a", encoding="utf-8") as fh:
+                    fh.write(f"### {jetzt.isoformat(timespec='seconds')}\n{text}\n\n")
+            except Exception as e:  # noqa: BLE001
+                print(f"[history] not written: {e}")
+                return
+            if self._history_pruned_on != jetzt.date():
+                self._prune_history()
 
     def last_text(self) -> str:
         if not self.history_path or not self.history_path.exists():
@@ -275,15 +354,23 @@ class Pipeline:
         return ""
 
     def _prune_history(self) -> None:
-        """Eintraege aelter als history_keep_days entfernen (Datei bleibt klein und privat)."""
+        """Eintraege aelter als history_keep_days entfernen (Datei bleibt klein und privat).
+        Laeuft beim Start (warmup) und danach aus _remember. Seit 25.09.2026 atomar neu
+        geschrieben (_write_atomic: ein Absturz mittendrin loescht nicht den ganzen Verlauf) und
+        ohne Ausnahme nach aussen: ein unlesbarer Verlauf darf weder den Start noch das Diktat
+        abbrechen."""
+        self._history_pruned_on = datetime.now().date()
         days = int(self._ui.get("history_keep_days", 14) or 0)
         if not self.history_path or not self.history_path.exists() or days <= 0:
             return
-        cutoff = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
-        blocks = [b for b in self.history_path.read_text(encoding="utf-8").split("### ") if b.strip()]
-        keep = [b for b in blocks if b[:19] >= cutoff]
-        if len(keep) != len(blocks):
-            self.history_path.write_text("".join("### " + b for b in keep), encoding="utf-8")
+        try:
+            cutoff = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+            blocks = [b for b in self.history_path.read_text(encoding="utf-8").split("### ") if b.strip()]
+            keep = [b for b in blocks if b[:19] >= cutoff]
+            if len(keep) != len(blocks):
+                _write_atomic(self.history_path, "".join("### " + b for b in keep))
+        except Exception as e:  # noqa: BLE001
+            print(f"[history] not pruned: {e}")
 
     # ---- Ausgabe ----
 
@@ -406,6 +493,23 @@ class Pipeline:
         return ok
 
 
+class _Aufnahme:
+    """Was zu genau EINER Aufnahme gehoert (25.09.2026): die schon waehrend der Aufnahme
+    bereinigten Abschnitte, der Streamer-Thread, der sie rechnet, und die Kategorie des Fensters
+    beim Start. Lebt von _start_recording bis zum Ende von _process fuer dieselbe Generation.
+
+    Bis dahin gab es das nur je einmal fuer "die" Aufnahme: eine neue Aufnahme leerte die
+    Abschnitte und ersetzte Streamer und Kategorie, waehrend die vorige noch verarbeitet wurde.
+    Mit ui.discard_pending_on_new_recording: false oder discard_only_if_shorter_than_s > 0 kam
+    von einer langen Rede nach sofortigem erneutem Druecken dann nur der letzte Rest an, und die
+    Verarbeitung wartete bis zu 120 s auf den Streamer der NEUEN Aufnahme."""
+
+    def __init__(self, category: str):
+        self.parts: list[str] = []
+        self.category = category
+        self.streamer: threading.Thread | None = None
+
+
 class App:
     """Tray-App. Zwei Hotkey-Arten: halten (hold) oder Umschalten (toggle: einmal = an, nochmal = aus).
     Verarbeitung laeuft im Worker-Thread. Waehrend einer langen Aufnahme werden fertige Abschnitte
@@ -442,7 +546,7 @@ class App:
         # Oberflaechensprache (09.09.2026): config.yaml (ui.language) ist die Vorgabe, die
         # Tray-Wahl in state.json sticht sie. "auto" = Windows-Anzeigesprache, damit das
         # Werkzeug bei jedem sofort in seiner Sprache laeuft.
-        self.ui_language = str(state.get("ui_lang") or ui.get("language") or "auto")
+        self.ui_language = _ui_language_setting(cfg, state)
         i18n.set_language(i18n.resolve(self.ui_language))
         self.toggle_mode = bool(state.get("toggle_mode", (cfg.get("hotkey", {}) or {}).get("mode", "hold") == "toggle"))
         # Bildausschnitt (10.09.2026): eigene Taste, eigener Ordner, eigene Aufbewahrung
@@ -466,11 +570,11 @@ class App:
         self._snip_watcher = None
         self._snip_lock = threading.Lock()   # ein Ausschnitt zur Zeit
         snip_mod.set_hint(i18n.t("snip_hint"))
-        # Streaming-Abschnitte der laufenden Aufnahme
-        self._parts: list[str] = []
+        # Streaming-Abschnitte, Streamer und Kategorie JE AUFNAHME (siehe _Aufnahme, 25.09.2026):
+        # generation -> _Aufnahme, bis _process fuer diese Generation fertig ist.
+        self._recs: dict[int, _Aufnahme] = {}
         self._parts_lock = threading.Lock()
         self._rec_start = 0.0
-        self._streamer: threading.Thread | None = None
         self._inflight_s = 0.0         # Audio-Sekunden des Abschnitts, den der Streamer gerade rechnet
         self._hk = None                # Hotkey (fuer die Messung Taste -> Stopp)
         self._timing: dict = {}        # Zeitmarken der letzten Aufnahme (Ausgabe als [timing]-Zeile)
@@ -496,21 +600,29 @@ class App:
         if self._recorder.is_recording:
             return
         self._generation += 1
-        with self._parts_lock:
-            self._parts = []
+        gen = self._generation
         self._rec_start = time.time()
-        self._rec_category = context_mod.foreground_info(self.cfg).get("category", "default")
-        self._recorder.start()
+        rec = _Aufnahme(context_mod.foreground_info(self.cfg).get("category", "default"))
+        # Eintragen, BEVOR die Aufnahme laeuft (ein Stopp findet sie dann immer); scheitert der
+        # Start, wieder austragen, sonst bliebe ein Eintrag ohne Verarbeitung liegen.
+        with self._parts_lock:
+            self._recs[gen] = rec
+        try:
+            self._recorder.start()
+        except BaseException:
+            with self._parts_lock:
+                self._recs.pop(gen, None)
+            raise
         # Anzeige erst, wenn wirklich Audio ankommt („damit man weiß, jetzt ist die
         # Aufnahme 100 % da“). Mit offenem Stream ist das sofort; muss der Stream erst geoeffnet werden,
         # erscheint das Rot verzoegert — aber ehrlich. Hoechstens 3 s warten, dann trotzdem anzeigen.
-        threading.Thread(target=self._show_recording_when_live, args=(self._generation,), daemon=True).start()
+        threading.Thread(target=self._show_recording_when_live, args=(gen,), daemon=True).start()
         if self.toggle_mode:
             _beep("start")
         if self.tray:
             self.tray.set_state("recording")
-        self._streamer = threading.Thread(target=self._stream_loop, args=(self._generation,), daemon=True)
-        self._streamer.start()
+        rec.streamer = threading.Thread(target=self._stream_loop, args=(gen, rec), daemon=True)
+        rec.streamer.start()
 
     def _show_recording_when_live(self, gen: int) -> None:
         t0 = time.time()
@@ -524,8 +636,13 @@ class App:
             if lag > 0.5:
                 print(f"[audio] recording only started after {lag:.1f} s (the stream had to be opened)")
 
-    def _stream_loop(self, gen: int) -> None:
-        """Waehrend der Aufnahme: fertige Abschnitte (an Sprechpausen) schon transkribieren."""
+    def _stream_loop(self, gen: int, rec: _Aufnahme) -> None:
+        """Waehrend der Aufnahme: fertige Abschnitte (an Sprechpausen) schon transkribieren.
+        Die Schleife endet mit der Aufnahme (oder sobald eine neuere begonnen hat: der Recorder
+        gehoert dann ihr). Ergebnisse gehen immer in rec.parts, die Abschnitte DIESER Aufnahme,
+        auch der Abschnitt, der beim Loslassen noch in Arbeit war, wenn inzwischen schon die
+        naechste Aufnahme laeuft (bis 25.09.2026 wurde er dann verworfen). Ob sie geliefert
+        werden, entscheidet _process ueber _is_cancelled."""
         limit_warned = False
         while self._recorder.is_recording and gen == self._generation:
             if self._recorder.limit_hit and not limit_warned:
@@ -545,16 +662,17 @@ class App:
             try:
                 t = time.time()
                 text = self.pipeline.transcribe(chunk)
-                cleaned, _ = self.pipeline.clean_text(text, self._rec_category) if text else ("", [])
+                cleaned, _ = self.pipeline.clean_text(text, rec.category) if text else ("", [])
             except Exception as e:  # noqa: BLE001
                 print(f"[stream] chunk error: {e}")
                 continue
             finally:
                 self._inflight_s = 0.0
-            if cleaned and gen == self._generation:
+            if cleaned:
                 with self._parts_lock:
-                    self._parts.append(cleaned)
-                print(f"[stream] #{gen} chunk {len(self._parts)} ({len(chunk)/self._recorder.samplerate:.0f} s audio, "
+                    rec.parts.append(cleaned)
+                    n = len(rec.parts)
+                print(f"[stream] #{gen} chunk {n} ({len(chunk)/self._recorder.samplerate:.0f} s audio, "
                       f"{time.time()-t:.1f} s compute): {_preview(cleaned, 60)!r}")
 
     def _stop_recording(self) -> None:
@@ -609,7 +727,11 @@ class App:
 
     def _process(self, arr: np.ndarray, ctx: dict, gen: int) -> None:
         try:
-            st = self._streamer
+            # Streamer und Abschnitte DIESER Aufnahme, nicht die der neuesten (25.09.2026, siehe
+            # _Aufnahme): eine inzwischen begonnene Aufnahme hat ihre eigenen.
+            with self._parts_lock:
+                rec = self._recs.get(gen)
+            st = rec.streamer if rec else None
             timing = self._timing if self._timing.get("gen") == gen else {}
 
             def prefix_when_ready() -> str:
@@ -623,7 +745,9 @@ class App:
                 timing["stream_wait_s"] = time.time() - t
                 with self._parts_lock:
                     # Abschnitte gehoeren nur zu einem Diktat, das noch gilt.
-                    return "" if self._is_cancelled(gen) else " ".join(self._parts)
+                    if rec is None or self._is_cancelled(gen):
+                        return ""
+                    return " ".join(rec.parts)
 
             res = self.pipeline.process_audio(arr, do_inject=True, ctx=ctx,
                                               is_cancelled=lambda: self._is_cancelled(gen),
@@ -654,6 +778,10 @@ class App:
                 self.tray.notify(i18n.t("note_error", error=e))
         finally:
             self._pending.pop(gen, None)
+            # Aufraeumen: die Aufnahme ist erledigt (geliefert oder verworfen). Ein Streamer, der
+            # noch rechnet, haelt seine _Aufnahme selbst; hier bleibt nichts liegen.
+            with self._parts_lock:
+                self._recs.pop(gen, None)
             with self._busy_lock:
                 self._busy = max(0, self._busy - 1)
                 still_busy = self._busy > 0
@@ -716,6 +844,43 @@ class App:
             print(f"[history] {grund}")
             if self.tray:
                 self.tray.notify(grund)
+
+    # ---------------- Einstellungen, Autostart (Arbeitspaket 7, 25.09.2026) ----------------
+    def open_settings(self) -> str:
+        """Tray -> "Einstellungen": config.local.yaml oeffnen, fehlt sie, vorher aus
+        config.local.example.yaml anlegen (wf/config.py). Die eigenen Werte stehen damit nicht
+        in der versionierten config.yaml, ein git pull ueberschreibt sie nicht.
+        Rueckgabe: '' = geoeffnet, sonst der Grund (fuer Tray-Meldung und Test)."""
+        try:
+            pfad, neu = config_mod.ensure_local_config()
+        except OSError as e:
+            return i18n.t("note_settings_open_failed", error=e)
+        if neu:
+            print(f"[settings] created {pfad.name} from {config_mod.LOCAL_EXAMPLE_PATH.name}")
+        fehler = _open_in_editor(pfad)
+        return i18n.t("note_settings_open_failed", error=fehler) if fehler else ""
+
+    def _open_settings(self) -> None:
+        grund = self.open_settings()
+        if grund:
+            print(f"[settings] {grund}")
+        # Gelesen wird die Datei nur beim Start: ohne diesen Hinweis wartet man nach dem
+        # Speichern vergeblich auf die neue Taste.
+        text = grund or i18n.t("note_settings_restart", file=config_mod.LOCAL_NAME)
+        if self.tray:
+            self.tray.notify(text)
+
+    def _set_autostart(self, on: bool) -> None:
+        """Tray -> "Mit Windows starten" (Haken): Verknuepfung im Autostart-Ordner anlegen oder
+        loeschen (wf/autostart.py). Ein Fehler wird eine Tray-Meldung, kein Absturz."""
+        grund = autostart_mod.set_enabled(on)
+        print(f"[autostart] {'on' if on else 'off'}: {grund or 'done'}")
+        if grund:
+            text = i18n.t("note_autostart_failed", error=grund)
+        else:
+            text = i18n.t("note_autostart_on" if on else "note_autostart_off")
+        if self.tray:
+            self.tray.notify(text)
 
     # ---------------- Bildausschnitt ----------------
     @staticmethod
@@ -907,7 +1072,9 @@ class App:
                 "clipboard_only": "text goes to the clipboard (Ctrl+V).",
                 }.get(mode, f"inserts text at the cursor ({mode}).")
         how = "press once = on, again = off (toggle mode)" if self.toggle_mode else "hold it down"
-        print(f"[app] ready. '{key}' {how}. Then -> {hint}")
+        # Der wirksame Name: nach einem unbekannten hotkey.key steht hier "ctrl_r", passend zur
+        # Warnung von HoldToTalk (Arbeitspaket 7), nicht der Tippfehler.
+        print(f"[app] ready. '{hk.key_name}' {how}. Then -> {hint}")
 
         self.pipeline.tray = None
         if self.use_tray:
@@ -916,7 +1083,9 @@ class App:
                              on_copy_last=self._copy_last, toggle_mode=self.toggle_mode,
                              on_translate_to=self._set_translate_to, on_open_log=self._open_log,
                              on_set_ui_language=self._set_ui_language, ui_language=self.ui_language,
-                             on_open_images=self._open_images)
+                             on_open_images=self._open_images, on_open_settings=self._open_settings,
+                             on_set_autostart=self._set_autostart,
+                             autostart_enabled=autostart_mod.is_enabled)
             self.pipeline.tray = self.tray
             self.tray.set_state("idle")
             # pystray.run() blockiert im Main-Thread; Hotkey-Listener laeuft eh separat. Tray.run()
@@ -1049,9 +1218,6 @@ def main() -> int:
     if args.list_devices:
         print(audio_mod.list_devices())
         return 0
-    if args.selftest:
-        from selftest import run_selftests
-        return run_selftests()
     if args.doctor:
         # Regulaerer Aufruf faengt "--doctor" schon vor den schweren Importen am Dateikopf ab
         # (B1) - hier nur noch als Rueckfallweg, falls main() direkt aufgerufen wird (Test), und
@@ -1059,8 +1225,14 @@ def main() -> int:
         from wf.doctor import run_doctor
         return run_doctor()
 
-    cfg = config_mod.load_config()
-
+    # Seit 25.09.2026 vor --selftest: die Selbsttests lesen die Einstellungen ebenfalls, eine
+    # kaputte config.local.yaml soll auch dort diese eine klare Zeile ergeben, keinen Traceback.
+    cfg = _load_config_or_explain()
+    if cfg is None:
+        return 2
+    if args.selftest:
+        from selftest import run_selftests
+        return run_selftests()
     if args.transcribe_file:
         return cmd_transcribe_file(cfg, args.transcribe_file)
     if args.clean_text is not None:
@@ -1069,8 +1241,39 @@ def main() -> int:
         from calibrate import run_calibration
         return run_calibration(cfg, args.nur)
 
+    # Nur der normale App-Start (Tray oder --no-tray) hoert auf die Diktat-Taste: hoechstens eine
+    # Instanz (wf/instance.py), geprueft VOR App(), also bevor Modelle geladen werden.
+    if not instance_mod.acquire():
+        _second_start_notice(cfg)
+        return 0
     App(cfg, use_tray=not args.no_tray).run()
     return 0
+
+
+def _load_config_or_explain() -> dict | None:
+    """config.yaml + config.local.yaml laden (Arbeitspaket 7) und nennen, welche Schluessel die
+    lokale Datei setzt (nur Namen). Kaputte Datei: eine Zeile mit Datei und Zeile (Konsole bzw.
+    data/app.log) und eine Windows-Meldung, Rueckgabe None - statt eines Tracebacks, den ohne
+    Konsole (pythonw, Autostart) niemand sieht; das Tray-Symbol erschiene dann einfach nicht."""
+    try:
+        cfg = config_mod.load_config()
+    except config_mod.ConfigError as e:
+        print(f"[config] ERROR: {e}")
+        i18n.set_language(i18n.resolve(_ui_language_setting({}, _load_state())))
+        _message_box(i18n.t("note_config_unreadable", error=e), error=True)
+        return None
+    for zeile in config_mod.local_summary_lines(cfg):
+        print(zeile)
+    return cfg
+
+
+def _second_start_notice(cfg: dict) -> None:
+    """Eine Instanz laeuft schon: Konsolenzeile und kurze Windows-Meldung, dann Ende. Die
+    laufende Instanz bleibt unberuehrt (kein Signal, kein Beenden)."""
+    print("[app] my-local-whisper is already running (see its tray icon) -> this second start "
+          "exits, the running one is left alone.")
+    i18n.set_language(i18n.resolve(_ui_language_setting(cfg, _load_state())))
+    _message_box(i18n.t("note_already_running"))
 
 
 if __name__ == "__main__":

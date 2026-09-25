@@ -356,6 +356,19 @@ def attrappe_falls_noetig():
 
 
 @pytest.fixture(autouse=True)
+def _ohne_eigene_einstellungen(monkeypatch, tmp_path_factory):
+    """Arbeitspaket 7: wf/config.py legt eine config.local.yaml neben config.yaml ueber die
+    ausgelieferten Werte. Die persoenliche Datei auf dem Entwicklerrechner darf die Tests nicht
+    faerben (sonst waere derselbe Test dort rot und in CI gruen): LOCAL_CONFIG_PATH zeigt in jedem
+    Test auf eine Datei, die es nicht gibt. Tests der Ueberlagerung setzen ihn selbst.
+    wf.config wird erst hier importiert, beim Laufen eines Tests, nicht beim Laden dieser Datei:
+    ein Importfehler dort bleibt ein roter Test (Regel oben)."""
+    config = importlib.import_module("wf.config")
+    monkeypatch.setattr(config, "LOCAL_CONFIG_PATH",
+                        tmp_path_factory.getbasetemp() / "keine" / "config.local.yaml")
+
+
+@pytest.fixture(autouse=True)
 def _kein_netzwerk(monkeypatch):
     """Kein Test redet mit einem echten Server, auch nicht mit einem laufenden Ollama auf dem
     Entwicklerrechner: sonst waere derselbe Test dort gruen und in CI rot. Wer HTTP braucht,

@@ -1,10 +1,21 @@
 # my-local-whisper — configuration
 # Every value below can be changed. After editing, restart the app
 # (tray icon -> Quit, then start-whisperflow.bat).
+#
+# Your own changes belong in config.local.yaml next to this file (tray icon -> Settings creates
+# it from config.local.example.yaml and opens it). It is laid over this file at start: sections
+# are merged, any other value replaces the one here. git ignores config.local.yaml, so `git pull`
+# never collides with your settings; this file stays exactly as shipped. The console (or
+# data/app.log) names the keys it overrides; a broken config.local.yaml stops the start with a
+# message naming the file and the line (or the key) at fault.
 
 hotkey:
   # Push-to-talk key, given as a pynput key name. Default: right Ctrl.
-  # Alternatives: "ctrl_l", "cmd" (Windows key), "f9", "scroll_lock".
+  # Any name pynput knows works, e.g. "ctrl_l", "cmd" (Windows key), "f8", "f9", "insert",
+  # "pause", "scroll_lock", or a single character. The key is not swallowed: it still reaches
+  # the program in front, so pick one that does nothing there on its own.
+  # An unknown name prints a console warning (with the list of valid names) and falls back to
+  # right Ctrl.
   key: "ctrl_r"
   # hold  = hold the key down while speaking (default)
   # toggle = press once to start, press again to stop
@@ -116,6 +127,8 @@ context:
 
 dictionary_path: "dictionary.txt"   # terms (names, places, products); the order is the priority for the Whisper prompt
 aliases_path: "aliases.txt"         # misheard spelling -> correct spelling; grows via `--calibrate`
+# Your own vocabulary without `git pull` conflicts: copy both files to dictionary.local.txt and
+# aliases.local.txt (git ignores them) and point these two keys there in config.local.yaml.
 # Optional: load names from a JSON file instead of typing them into the dictionary.
 # Format: {"members": [{"name": "First Last", "aktiv": true}, ...]}. null = off.
 employees_from: null

@@ -27,7 +27,11 @@ from typing import Callable
 
 from pynput import keyboard
 
-# Erlaubte Hotkey-Namen -> pynput Key
+_DEFAULT = "ctrl_r"
+
+# Die bisher einzigen erlaubten Namen -> pynput Key. Seit Arbeitspaket 7 (25.09.2026) gilt jeder
+# Name aus pynput.keyboard.Key (siehe _resolve); diese Tabelle wird zuerst gefragt, damit die
+# alten Namen genau wie bisher aufgeloest werden (z. B. cmd_r, wo pynput es nicht kennt).
 _SPECIAL: dict[str, object] = {
     "ctrl_r": keyboard.Key.ctrl_r,
     "ctrl_l": keyboard.Key.ctrl_l,
@@ -42,8 +46,9 @@ _SPECIAL: dict[str, object] = {
     "f12": keyboard.Key.f12,
 }
 
-# Virtual-Key-Codes fuer die physische Gegenprobe (Windows). Nur die Tasten, die als
-# Hotkey in Frage kommen; fehlt eine, greift allein die Ruhepause-Regel.
+# Virtual-Key-Codes fuer die physische Gegenprobe (Windows). Seit Arbeitspaket 7 nur noch der
+# Rueckfall: der Code kommt zuerst aus pynput (Key.<name>.value.vk, siehe _vk_code). Ist keiner
+# bekannt (Einzelzeichen), greift allein die Ruhepause-Regel.
 _VK = {
     "ctrl_r": 0xA3, "ctrl_l": 0xA2, "alt_r": 0xA5, "alt_gr": 0xA5,
     "cmd": 0x5B, "cmd_r": 0x5C, "scroll_lock": 0x91, "pause": 0x13,
@@ -55,19 +60,51 @@ _VK = {
 _STUCK_AFTER_S = 1.0
 
 
+def _pynput_key(name: str):
+    """keyboard.Key.<name> oder None. Nur echte Tasten zaehlen, nicht andere Attribute der
+    Enum-Klasse (getattr(Key, "mro") ist eine Methode, keine Taste)."""
+    key = getattr(keyboard.Key, name, None) if name else None
+    return key if isinstance(key, keyboard.Key) else None
+
+
+def _resolve(name: str | None) -> tuple[object, str]:
+    """(pynput-Taste, wirksamer Name). Bis 25.09.2026 kannte resolve_key nur die kurze Liste
+    _SPECIAL, jeder andere Name (z. B. "f8", "insert", "menu") fiel STILL auf die rechte Strg
+    zurueck: man drueckte die eingestellte Taste, und nichts geschah. Jetzt: _SPECIAL, dann jeder
+    Name aus pynput.keyboard.Key, dann ein einzelnes Zeichen; ein unbekannter Name bekommt eine
+    laute Warnung mit den gueltigen Namen. Leer/nicht gesetzt -> ctrl_r ohne Warnung (kein Wert
+    ist kein Tippfehler, wie bei snip.key). str(): YAML liest `key: 5` als Zahl, gemeint ist
+    die Taste 5 (vorher: AttributeError beim Start)."""
+    n = ("" if name is None else str(name)).strip().lower() or _DEFAULT
+    if n in _SPECIAL:
+        return _SPECIAL[n], n
+    key = _pynput_key(n)
+    if key is not None:
+        return key, n
+    if len(n) == 1:
+        return keyboard.KeyCode.from_char(n), n
+    gueltig = ", ".join(sorted(set(keyboard.Key.__members__) | set(_SPECIAL)))
+    print(f"[hotkey] WARNING: unknown key name {name!r} in hotkey.key -> falling back to "
+          f"{_DEFAULT!r} (right Ctrl). Valid names: a single character, or {gueltig}")
+    return keyboard.Key.ctrl_r, _DEFAULT
+
+
 def resolve_key(name: str):
-    name = (name or "ctrl_r").strip().lower()
-    if name in _SPECIAL:
-        return _SPECIAL[name]
-    # einzelnes Zeichen
-    if len(name) == 1:
-        return keyboard.KeyCode.from_char(name)
-    return keyboard.Key.ctrl_r  # Fallback
+    return _resolve(name)[0]
+
+
+def _vk_code(key_name: str) -> int | None:
+    """Windows-Tastencode fuer die physische Gegenprobe: aus pynput (Key.<name>.value.vk), sonst
+    aus _VK. None = keiner bekannt (z. B. ein Einzelzeichen), dann gilt die Zeitregel."""
+    name = str(key_name or "").strip().lower()
+    key = _pynput_key(name)
+    vk = getattr(key.value, "vk", None) if key is not None else None
+    return vk if isinstance(vk, int) else _VK.get(name)
 
 
 def _physically_down(key_name: str) -> bool | None:
     """True/False laut Windows, None wenn nicht feststellbar (dann gilt die Zeitregel)."""
-    vk = _VK.get((key_name or "").strip().lower())
+    vk = _vk_code(key_name)
     if vk is None:
         return None
     try:
@@ -83,8 +120,9 @@ class HoldToTalk:
 
     def __init__(self, key_name: str, on_press: Callable[[], None],
                  on_release: Callable[[], None]):
-        self._key_name = key_name
-        self._target = resolve_key(key_name)
+        # Der WIRKSAME Name (nach einem Rueckfall "ctrl_r"): die physische Gegenprobe fragt so
+        # die Taste ab, auf die wirklich gehoert wird.
+        self._target, self._key_name = _resolve(key_name)
         self._on_press = on_press
         self._on_release = on_release
         self._down = False
@@ -98,6 +136,12 @@ class HoldToTalk:
         self._jobs: queue.Queue = queue.Queue()
         self._worker: threading.Thread | None = None
         self._stopping = threading.Event()
+
+    @property
+    def key_name(self) -> str:
+        """Der Name der Taste, auf die wirklich gehoert wird (nach einem Rueckfall "ctrl_r"),
+        fuer die Startzeile - nicht der Rohwert aus der Konfiguration."""
+        return self._key_name
 
     def _matches(self, key) -> bool:
         return key == self._target

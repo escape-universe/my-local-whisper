@@ -1,0 +1,43 @@
+# my-local-whisper - your own settings, safe from `git pull`
+#
+# Copy this file to config.local.yaml (same folder) and change what you need there.
+# (Deutsch: nach config.local.yaml kopieren und dort anpassen.)
+# The tray menu item "Settings" does both for you: it creates config.local.yaml from this file
+# if it is missing and opens it in your editor.
+#
+# Why a second file: config.yaml belongs to the repository, so whatever you change there
+# collides with the next `git pull`. config.local.yaml is ignored by git and survives every
+# update. At start it is laid over config.yaml. Sections are merged, any other value replaces the
+# one from config.yaml, and everything you do not mention keeps its value from config.yaml (where
+# every setting is explained). The console (or data/app.log) names the keys this file changes.
+#
+# To use an example, remove the "# " in front of its lines (the section line AND the indented
+# line below it), keep the two-space indentation, save, then restart the app
+# (tray -> Quit, then start it again).
+
+# Dictation key (push-to-talk). Any pynput key name, e.g. "f8", "insert", "pause",
+# "scroll_lock", "ctrl_l", or a single character. An unknown name prints a warning and falls
+# back to the right Ctrl key. The key still reaches the program in front, so pick one that does
+# nothing there on its own.
+# hotkey:
+#   key: "f8"
+
+# Screenshot key: a single key or a combination, e.g. "print_screen" or "ctrl_r+shift_r".
+# snip:
+#   key: "print_screen"
+
+# Microphone: part of its name or its number (py whisperflow.py --list-devices lists them).
+# audio:
+#   input_device: "USB"
+
+# Your own vocabulary, outside the files git updates. Copy dictionary.txt and aliases.txt to
+# these names first (git ignores them). Calibration (--calibrate) then writes into your copy.
+# dictionary_path: "dictionary.local.txt"
+# aliases_path: "aliases.local.txt"
+
+# Models. Speech recognition: without a fast NVIDIA GPU, "small" is much quicker (and less
+# accurate). Clean-up: any model your Ollama has pulled.
+# stt:
+#   model: "small"
+# llm:
+#   model: "qwen2.5:7b-instruct"
