@@ -98,7 +98,8 @@ scan the folder, never read the whole history "for context". The script picks; t
 
 ## The mistakes we already paid for
 
-This is the part worth more than the code. Each line is a measured failure, not a precaution.
+This is the part worth more than the code. Each line is a real failure, whether caught live or
+while reviewing the code, not a precaution invented up front.
 
 ### Speech and clean-up
 
@@ -115,6 +116,8 @@ This is the part worth more than the code. Each line is a measured failure, not 
 | Releasing the key felt 70 ms late after adding a beep | The sound call blocks for as long as the tone lasts, and it sat between "stop" and "update the badge" | Play sounds in their own thread, and put them *after* the visible state change |
 | Long dictations waited seconds after release | The final step waited for the whole background transcriber before it even started on the remainder | Start the remainder immediately; collect the finished chunks only when assembling the text. Keep the chunks small (~12 s) so the remainder is small |
 | The progress ring seemed frozen near the end | The estimate counted only the remainder, not the chunk still being transcribed - and its coefficients were roughly twice the real cost | Include the in-flight chunk, and derive the coefficients from your own measured runs (ours: ~0.7 s fixed + ~0.10 s per second of audio) |
+| `device: auto` crashes instead of falling back, on a machine with a GPU but no working CUDA libraries | The GPU load error surfaced raw, before any CPU fallback was attempted | Probe the GPU libraries with the same loader the engine itself uses, and retry once on the CPU if the real load still fails |
+| With the settings that keep a long dictation instead of dropping it, pressing the key again right after release, while the previous recording was still processing, lost most of it | The streamed chunks and their background thread lived in one shared slot for "the" recording, and the new one overwrote it mid-flight | Give every recording its own slot (chunks, thread, context) keyed by a generation counter, alive until it finishes |
 
 ### Keyboard, focus, clipboard
 
@@ -128,6 +131,8 @@ This is the part worth more than the code. Each line is a measured failure, not 
 | "Pasting the image does not work here" in one app but not another | Only one clipboard format was set | Set the plain bitmap format *and* PNG; different applications prefer different ones |
 | Pasting text lands in the wrong window | Focus changed between the key release and the end of processing | Remember the window *and* the focused field at release time, and paste only if both still match |
 | Nothing is pasted into an elevated/admin window | The OS blocks input from a lower-integrity process | Detect it, tell the user, leave the text on the clipboard — do not run the tool as admin to "fix" this |
+| Automatic pasting never happens on a fresh install, with no error anywhere | An import used only inside a try/except (the focus-detection package) was missing from the dependency list, so the check always caught it and reported "no text field" | List every package a default code path needs, even one only reached inside a try/except |
+| After one lost key-up, any single key that is part of a combination fires the action alone from then on | The combination trusted its own remembered per-key state, which one missed release had desynced from reality | Re-check a combination against the OS's physical key state at the moment it looks complete, not only against remembered events |
 
 ### Screen and display
 
@@ -145,6 +150,9 @@ This is the part worth more than the code. Each line is a measured failure, not 
 | The published version was broken in ways the local one never showed | Published files were built from a curated copy | Clone your own published repository into a fresh folder and run it there — as a stranger would. This is how we found half the console output still in the wrong language, and a missing helper file |
 | A test "passed" but proved nothing | It was never checked against the broken state | Calibrate every new test: break the fix on purpose once, watch the test fail, restore |
 | A new test failed randomly under load | GUI timing assumptions | Wait for a condition, not for a fixed number of seconds; skip honestly with a reason rather than reporting a false failure |
+| The tray icon never appears, although the app is clearly running | A custom setup callback for the tray library replaced its default behaviour wholesale, including the line that makes the icon visible | Reproduce every part of a library's default setup, not only the part being customised |
+| A test passes on Linux CI, then does something real on the Windows runner (a real named mutex, the real keyboard state) | It relied on the real OS module simply being absent to fall back to a fake; on the Windows runner the real module exists | Patch the OS call explicitly inside the test itself, on every platform, never rely on an import failing elsewhere |
+| The setup-check command itself crashes with an ImportError, on exactly the machine that needs it most | It imported the same optional, possibly-missing packages it exists to report on, before printing a single line | Import only the standard library at a diagnostic tool's own head; import each optional dependency inside its own guarded check |
 
 ## Verification: what "done" means
 

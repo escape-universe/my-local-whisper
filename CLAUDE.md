@@ -19,6 +19,8 @@ python3 -m pytest -q                             # Logik-Tests, laufen überall 
   Programme, Bildschirmfoto). Sie läuft nur am Windows-Rechner, nicht in der Cloud.
 - Tastatur-Hooks, Mikrofon, GPU und Zwischenablage laufen hier nicht live: die Logik mit Attrappen
   testen und ausdrücklich als „nicht live geprüft“ melden.
+- `python3 whisperflow.py --doctor` läuft auch hier, ohne die echten Pakete: druckt `[FAIL]`/`[WARN]`
+  für das, was fehlt, statt abzustürzen. Kein Ersatz für die Tests oben, aber ein schneller Handcheck.
 
 ## Konventionen im Code
 
@@ -28,6 +30,8 @@ python3 -m pytest -q                             # Logik-Tests, laufen überall 
 - Alles, was der Nutzer sieht (Tray-Menü, Meldungen, Anzeigefeld), kommt aus `wf/i18n.py`, in
   allen fünf Sprachen (de, en, ru, es, it) mit denselben Platzhaltern.
 - Jede Einstellung wird in `config.yaml` dokumentiert (Kommentar direkt daneben).
+- `config.local.yaml`, `state.json`, `dictionary.local.txt`, `aliases.local.txt` sind persönlich
+  und stehen in `.gitignore`; nie mit `git add -f` einchecken.
 - Neue Tests einmal am alten Stand rot sehen, dann grün. Auf Bedingungen warten statt auf feste
   `sleep`s.
 
