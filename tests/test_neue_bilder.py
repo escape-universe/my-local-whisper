@@ -1,4 +1,5 @@
-"""tools/neue-bilder.py: der Standard-Bilderordner muss zu config.yaml passen (Arbeitspaket 6)."""
+"""tools/neue-bilder.py: der Bilder-Ordner muss zur wirksamen Konfiguration passen - config.yaml
+(Arbeitspaket 6) und seit K1 (25.09.2026) auch einer config.local.yaml daneben (Arbeitspaket 7)."""
 from __future__ import annotations
 
 import importlib.util
@@ -29,3 +30,30 @@ def test_snip_folder_aus_der_config_hat_vorrang(tmp_path):
     mit_folder = tmp_path / "mit-snip-folder.yaml"
     mit_folder.write_text("snip:\n  folder: data/eigener-ordner\n", encoding="utf-8")
     assert nb.ordner(mit_folder).name == "eigener-ordner"
+
+
+def test_snip_folder_aus_config_local_yaml_hat_vorrang(tmp_path):
+    """K1 (Schlusspruefung B2, 25.09.2026): eigene Einstellungen gehoeren seit Arbeitspaket 7 in
+    config.local.yaml, nicht mehr in config.yaml selbst (wf/config.py). Bisher las ordner() nur
+    config.yaml direkt und fand die Bilder nicht mehr, sobald snip.folder ausschliesslich lokal
+    gesetzt war - genau das Szenario aus der Schlusspruefung: die App speichert nach
+    data/meine-shots, der Zubringer suchte weiter in data/images."""
+    nb = _modul()
+    basis = tmp_path / "config.yaml"
+    basis.write_text("snip:\n  folder: data/images\n", encoding="utf-8")
+    (tmp_path / "config.local.yaml").write_text("snip:\n  folder: data/meine-shots\n", encoding="utf-8")
+    assert nb.ordner(basis).name == "meine-shots"
+
+
+def test_kaputte_config_local_yaml_warnt_und_faellt_auf_config_yaml_zurueck(tmp_path, capsys):
+    """Eine kaputte config.local.yaml darf den Zubringer nicht abstuerzen lassen (anders als die
+    App: die bricht den Start ab, siehe whisperflow._load_config_or_explain). Eine kurze Zeile auf
+    stderr ist in Ordnung, dann gilt config.yaml allein weiter - kein stummes data/images."""
+    nb = _modul()
+    basis = tmp_path / "config.yaml"
+    basis.write_text("snip:\n  folder: data/eigener-ordner\n", encoding="utf-8")
+    # "snip" ist in config.yaml ein Abschnitt (dict); ein einzelner Wert darunter ist ein klarer
+    # Fehler (wf/config.py merge()), unabhaengig von YAML-Syntax.
+    (tmp_path / "config.local.yaml").write_text("snip: nicht-abschnitt\n", encoding="utf-8")
+    assert nb.ordner(basis).name == "eigener-ordner"
+    assert "config.local.yaml" in capsys.readouterr().err

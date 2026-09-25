@@ -94,20 +94,28 @@ def merge(base: dict[str, Any], local: dict[str, Any], source: str = LOCAL_NAME,
     return out, geaendert, neu
 
 
-def load_config(path: Path | None = None) -> dict[str, Any]:
+def load_config(path: Path | None = None, *, local: bool = True) -> dict[str, Any]:
     """config.yaml laden und eine config.local.yaml daneben darueberlegen (merge()).
     path = None: die config.yaml des Projekts und LOCAL_CONFIG_PATH. Mit eigenem path gilt die
     config.local.yaml im selben Ordner wie path. Was die lokale Datei setzt, steht danach in
-    cfg["_local"] (nur Schluesselnamen, fuer local_summary_lines()). Kaputte Datei: ConfigError."""
+    cfg["_local"] (nur Schluesselnamen, fuer local_summary_lines()). Kaputte Datei: ConfigError.
+
+    local=False (K1, 25.09.2026): config.local.yaml gar nicht erst ansehen, nur die
+    AUSGELIEFERTEN Werte aus config.yaml liefern. Fuer Pruefungen, die genau das brauchen, z. B.
+    selftest.py: seit Arbeitspaket 7 gehoeren eigene, dokumentierte Einstellungen (README) in
+    config.local.yaml, und eine Pruefung auf einen ausgelieferten Standardwert (etwa stt.model)
+    soll dadurch nicht rot werden. Die App selbst ruft load_config() nie mit local=False auf -
+    ihr Verhalten aendert sich durch diesen Parameter nicht."""
     p = path or CONFIG_PATH
     if not p.exists():
         raise FileNotFoundError(f"config.yaml nicht gefunden: {p}")
     cfg = _read_yaml(p, "fix the file")
-    local_path = LOCAL_CONFIG_PATH if path is None else p.with_name(LOCAL_NAME)
-    if local_path.is_file():
-        local = _read_yaml(local_path, f"fix the file, or delete it to use {p.name} alone")
-        cfg, geaendert, neu = merge(cfg, local, local_path.name)
-        cfg["_local"] = {"file": local_path.name, "changed": geaendert, "new": neu}
+    if local:
+        local_path = LOCAL_CONFIG_PATH if path is None else p.with_name(LOCAL_NAME)
+        if local_path.is_file():
+            lokal = _read_yaml(local_path, f"fix the file, or delete it to use {p.name} alone")
+            cfg, geaendert, neu = merge(cfg, lokal, local_path.name)
+            cfg["_local"] = {"file": local_path.name, "changed": geaendert, "new": neu}
     cfg["_root"] = str(ROOT)
     return cfg
 

@@ -34,7 +34,10 @@ def test_imports() -> None:
 
 def test_config_and_dict() -> None:
     from wf import config as c
-    cfg = c.load_config()
+    # K1, 25.09.2026: das sind Pruefungen auf AUSGELIEFERTE Werte (dictionary.txt-Beispielbegriffe,
+    # config.yaml) - load_config(local=False), sonst faerbt eine dokumentierte eigene
+    # dictionary_path (README) diese Pruefung rot, ohne dass etwas kaputt ist.
+    cfg = c.load_config(local=False)
     check("config: laedt config.yaml", bool(cfg.get("llm")))
     terms = c.load_dictionary(cfg)
     check("dictionary: Begriffe geladen", len(terms) > 5, f"{len(terms)} Begriffe")
@@ -98,8 +101,13 @@ def test_sprachbindung() -> None:
 
     # Uebersetzungsmodus nutzt ein eigenes Modell (gemma3:4b) — qwen2.5:3b konnte kein
     # Italienisch. Der Cleanup muss beim schnellen Modell bleiben.
+    # K1-B1, 25.09.2026: ausgelieferter Standardwert, kein allgemeines Invariant - gleiches Modell
+    # fuer llm.model und translate_model ist erlaubt (wf/cleanup.py faellt ohne eigenes
+    # translate_model sogar selbst darauf zurueck, wf/doctor.py nennt das ausdruecklich OK, und
+    # config.local.example.yaml erlaubt fuer llm.model "any model your Ollama has pulled").
+    # load_config(local=False), sonst faerbt eine eigene Modellwahl diese Pruefung rot.
     from wf import config as cfgmod
-    cl_obj = cl.Cleaner(cfgmod.load_config(), ["Ollama"])
+    cl_obj = cl.Cleaner(cfgmod.load_config(local=False), ["Ollama"])
     check("uebersetzung: eigenes Modell konfiguriert",
           cl_obj.translate_model and cl_obj.translate_model != cl_obj.model,
           f"clean={cl_obj.model} translate={cl_obj.translate_model}")
@@ -244,7 +252,11 @@ def test_clipboard_only() -> None:
     die Zwischenablage wird NICHT zurueckgesetzt (der Nutzer fuegt spaeter selbst ein)."""
     from wf import inject as ij
     from wf import config as c
-    cfg = c.load_config()
+    # K1, 25.09.2026: alle drei Werte unten sind ausgelieferte Standardwerte, die die README
+    # ausdruecklich als lokal umstellbar nennt (llm.base_url, stt.model) bzw. die der Blocker so
+    # nannte (inject.method) - load_config(local=False), sonst faerbt eine dokumentierte eigene
+    # config.local.yaml diese Pruefung rot, ohne dass etwas kaputt ist.
+    cfg = c.load_config(local=False)
     check("config: inject.method in (hybrid, clipboard_only)", cfg["inject"]["method"] in ("hybrid", "clipboard_only"),
           f"method={cfg['inject']['method']!r}")
     check("config: llm.base_url nutzt 127.0.0.1 (nicht localhost)", "127.0.0.1" in cfg["llm"]["base_url"],
@@ -304,9 +316,11 @@ def test_append_and_native_llm() -> None:
 
     # Direktive jedes Diktat faengt frisch an. Zwei Schalter muessen dafuer
     # stehen — sonst kaeme Altes ueber die Zwischenablage oder ueber eine noch laufende Aufnahme
-    # zurueck. Beide werden hier an der AUSGELIEFERTEN config.yaml geprueft, nicht nur im Code.
+    # zurueck. Beide werden hier an der AUSGELIEFERTEN config.yaml geprueft, nicht nur im Code
+    # (K1, 25.09.2026: load_config(local=False) - README nennt beide Schalter ausdruecklich als
+    # etwas, das man in config.local.yaml umstellt, das soll diese Pruefung nicht rot faerben).
     from wf import config as _cfgmod
-    _ui = (_cfgmod.load_config().get("ui") or {})
+    _ui = (_cfgmod.load_config(local=False).get("ui") or {})
     check("frisch: Anhaengen ist aus (append_within_s = 0)", float(_ui.get("append_within_s", 0)) == 0,
           str(_ui.get("append_within_s")))
     check("frisch: keine Laengen-Ausnahme beim Verwerfen (discard_only_if_shorter_than_s = 0)",
@@ -367,7 +381,10 @@ def test_tray_open_log() -> None:
     from pathlib import Path
     import whisperflow as wfm
     from wf import config as c
-    cfg = c.load_config()
+    # K1, 25.09.2026: ausgelieferter Standardwert - README/config.yaml nennen "ui.history_file:
+    # null" ausdruecklich als Weg, den Verlauf abzuschalten, das soll die Pruefung unten nicht rot
+    # faerben.
+    cfg = c.load_config(local=False)
     app = wfm.App.__new__(wfm.App)          # ohne Mikro/Modell: nur die Verlaufs-Logik pruefen
     app.tray = None
     app.pipeline = type("P", (), {"history_path": None})()
@@ -498,7 +515,13 @@ def test_fidelity_and_tiers() -> None:
         p.write_text("# Kommentar\nAlpha\nBeta\nAlpha\n\n# === NUR-CLEANUP (nur fuers Aufraeum-Modell)\n# noch ein Kommentar\nGamma\nDelta\n", encoding="utf-8")
         w, l = c.load_dictionary_tiers({"dictionary_path": str(p)})
     check("dictionary: Marker trennt Whisper-Stufe von Cleanup-Stufe", w == ["Alpha", "Beta"] and l == ["Gamma", "Delta"], f"{w} / {l}")
-    w2, l2 = c.load_dictionary_tiers(c.load_config())
+    # K1-B1, 25.09.2026: "nicht-leere Whisper-Stufe" ist ein ausgelieferter Standardwert, kein
+    # allgemeines Invariant - eine eigene dictionary.local.txt darf alle Begriffe hinter den
+    # NUR-CLEANUP-Marker legen (dann ist die Whisper-Stufe leer), App und --doctor laufen damit.
+    # load_config(local=False), sonst faerbt so eine gueltige eigene Datei diese Pruefung rot. Die
+    # zweite Pruefung (keine Duplikate ueber beide Stufen) haengt nur an load_dictionary_tiers()
+    # selbst (Dedupe-Logik, siehe tests/test_config.py) und gilt deshalb fuer jede Datei mit.
+    w2, l2 = c.load_dictionary_tiers(c.load_config(local=False))
     check("dictionary: echtes Woerterbuch hat eine nicht-leere Whisper-Stufe", len(w2) > 0, f"{len(w2)} / {len(l2)}")
     check("dictionary: keine Begriffe doppelt in beiden Stufen", not (set(w2) & set(l2)))
     from wf import cleanup as cl
@@ -511,7 +534,11 @@ def test_aliases_focus_employees() -> None:
     from wf import aliases as al
     from wf import config as c
     from wf import focus as fo
-    cfg = c.load_config()
+    # K1, 25.09.2026: ausgelieferte Standardwerte - inject.method (siehe Blocker) und der Inhalt
+    # von aliases.txt ueber aliases_path (README nennt eine eigene aliases.local.txt ausdruecklich)
+    # sollen durch eine dokumentierte config.local.yaml nicht rot werden. load_employee_names()
+    # unten pruefte ohnehin nur den Rueckgabetyp, nicht einen bestimmten Wert - unkritisch.
+    cfg = c.load_config(local=False)
     check("config: inject.method = hybrid (Default)", cfg["inject"]["method"] == "hybrid", cfg["inject"]["method"])
     pairs = al.load_aliases(c.load_aliases_path(cfg))
     check("aliases: aliases.txt geladen (>=5 Regeln)", len(pairs) >= 5, f"{len(pairs)} Regeln")
@@ -563,7 +590,9 @@ def test_long_dictation_parts() -> None:
     app._pending = {1: 600.0}
     long_ = app._is_cancelled(1)
     check("discard: 5-s-Aufnahme verworfen, 10-min-Aufnahme geliefert", short is True and long_ is False)
-    cfg = c.load_config()
+    # K1-B1, 25.09.2026: ausgelieferter Standardwert - config.yaml dokumentiert max_seconds als
+    # Abwaegung (3,8 MB Speicher je Minute), also etwas, das man persoenlich absenken darf.
+    cfg = c.load_config(local=False)
     check("config: audio.max_seconds >= 3600 (lange Reden)", int(cfg["audio"]["max_seconds"]) >= 3600, str(cfg["audio"]["max_seconds"]))
     from wf import stt as st
     check("stt: Prompt-Schluss-Satz definiert (Namen am Prompt-Ende werden sonst verschluckt)",
@@ -590,7 +619,10 @@ def test_reaktiv_nach_loslassen() -> None:
     from wf import config as c
     from wf import overlay as ov
 
-    cfg = c.load_config()
+    # K1-B1, 25.09.2026: ausgelieferter Standardwert - config.yaml dokumentiert chunk_seconds als
+    # Abwaegung ("Smaller = done sooner ... at the price of more clean-up calls"), also etwas,
+    # das man persoenlich umstellen darf.
+    cfg = c.load_config(local=False)
     check("reaktiv: Abschnitte hoechstens 15 s (audio.chunk_seconds)",
           float(cfg["audio"]["chunk_seconds"]) <= 15, str(cfg["audio"]["chunk_seconds"]))
     nur_rest = ov.estimate_seconds(5.0)
@@ -706,7 +738,9 @@ def test_aufnahme_aus_sichtbar() -> None:
     o.recording()
     check("aufnahme-aus: eine neue Aufnahme zeigt keine Stopp-Anzeige", o._state == "recording")
 
-    ui = (c.load_config().get("ui") or {})
+    # K1, 25.09.2026: ausgelieferter Standardwert - die README nennt "ui.beep_on_stop: false"
+    # ausdruecklich als Weg, den Ton abzuschalten, das soll diese Pruefung nicht rot faerben.
+    ui = (c.load_config(local=False).get("ui") or {})
     check("aufnahme-aus: Ton beim Loslassen ist an (ui.beep_on_stop)", bool(ui.get("beep_on_stop")) is True,
           str(ui.get("beep_on_stop")))
     import whisperflow as W
@@ -919,10 +953,14 @@ def test_neue_bilder_zubringer() -> None:
     check("zubringer: Zeitgrenze in der Zukunft liefert nichts", nb.bilder_seit(tmp, _time.time() + 60) == [])
     check("zubringer: Bildmasse ohne Laden gelesen", nb.masse(neu[0]) == "40x30", nb.masse(neu[0]))
     check("zubringer: fehlender Ordner ist kein Fehler", nb.bilder_seit(tmp / "gibtsnicht", 0) == [])
+    # K1, 25.09.2026: bewusst load_config() (wirksam), NICHT local=False - dieser Check soll
+    # gerade beweisen, dass der Zubringer demselben Ordner folgt, in den die App tatsaechlich
+    # schreibt (config.yaml + config.local.yaml, siehe ordner() in tools/neue-bilder.py), nicht
+    # nur dem ausgelieferten Standardwert.
     from wf import config as _cfg
     erwartet = _Path((_cfg.load_config().get("snip") or {}).get("folder", "data/images")).name
-    check("zubringer: Bilder-Ordner kommt aus config.yaml", nb.ordner().name == erwartet,
-          f"{nb.ordner()} (erwartet: {erwartet})")
+    check("zubringer: Bilder-Ordner kommt aus derselben Konfiguration wie die App",
+          nb.ordner().name == erwartet, f"{nb.ordner()} (erwartet: {erwartet})")
     for f in tmp.glob("*.png"):
         f.unlink()
 

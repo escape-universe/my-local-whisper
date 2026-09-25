@@ -38,7 +38,9 @@ Regeln:
    Modell der Hauptsitzung, und dann können Worker und Prüfer dasselbe Modell sein.
 2. Innerhalb eines Pakets bleiben die Rollen fest: Nachbesserungen macht derselbe Worker,
    die Nachprüfung derselbe Prüfer (beide mit `SendMessage` fortsetzen, dann kennen sie den
-   Verlauf).
+   Verlauf). Fehlt `SendMessage`: einen frischen Agenten mit demselben Modell starten und ihm
+   den bisherigen Bericht bzw. das bisherige Urteil sowie die Blocker wörtlich mitgeben. Rollen
+   und Rotation bleiben dabei unverändert.
 3. Ändert der Orchestrator ausnahmsweise selbst Code, zählt das als Worker-Arbeit mit dem
    Modell der Hauptsitzung. Der Prüfer muss dann das andere Modell sein. In Cloud-Sitzungen
    verrät `get_session` (claude-code-remote) das Modell der Hauptsitzung.
@@ -118,9 +120,13 @@ das Agent-Tool „Agent type not found“. Dann gilt:
   `Geprüft: Prüfer hat freigegeben (Runde <r>).` Danach kommt das nächste Paket.
 - **Modellnamen:** Sie gehören nicht in Commit-Nachrichten, nicht in den Code der Anwendung und
   nicht in deren Doku (README, Kommentare). Ausgenommen sind die Werkzeug-Dateien unter
-  `.claude/` (dieser Skill und die beiden Rollen), weil sie die Rotation festlegen müssen.
-- **NICHT FREIGEGEBEN**: Die Blocker gehen **unverändert** an denselben Worker (`SendMessage`).
-  Danach prüft derselbe Prüfer erneut (`SendMessage`): die alten Blocker und alles, was sich
+  `.claude/` (dieser Skill und die beiden Rollen), weil sie die Rotation festlegen müssen, und
+  Zuordnungszeilen, die die Umgebung oder der Nutzer für jeden Commit vorschreibt (z. B.
+  `Co-Authored-By: … <Modellname>`). Die bleiben, wie vorgeschrieben; die Regel gilt für den
+  beschreibenden Text der Commit-Nachricht.
+- **NICHT FREIGEGEBEN**: Die Blocker gehen **unverändert** an denselben Worker (`SendMessage`;
+  ist es nicht verfügbar, gilt der Ersatzweg aus Regel 2 der Rotation). Danach prüft derselbe
+  Prüfer erneut (`SendMessage`, dieselbe Ausnahme): die alten Blocker und alles, was sich
   seitdem geändert hat.
 - **Höchstens 3 Nachbesserungsrunden** pro Paket. Danach wird gestoppt und der Nutzer gefragt,
   als Multiple-Choice mit Empfehlung: weiter nachbessern / so übernehmen und den Blocker als

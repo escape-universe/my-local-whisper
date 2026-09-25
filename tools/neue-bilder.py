@@ -25,6 +25,7 @@ Exit-Code: 0 = mindestens ein Bild gefunden · 3 = nichts Neues (kein Fehler) ·
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import sys
 import time
@@ -35,17 +36,49 @@ ROOT = Path(__file__).resolve().parent.parent
 MARKER = ROOT / "data" / "_zuletzt-angesehen.json"
 
 
+def _config_modul():
+    """wf/config.py laden, ohne dass tools/ auf sys.path stehen muss (dieses Skript liegt nicht
+    im Projekt-Root, ein normales `import wf.config` faende das Paket sonst nicht)."""
+    spec = importlib.util.spec_from_file_location("wf_config_zubringer", ROOT / "wf" / "config.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    return mod
+
+
 def ordner(cfg_pfad: Path | None = None) -> Path:
-    """Bilder-Ordner aus config.yaml lesen (Standard data/images, wie in config.yaml und
-    whisperflow.py - Arbeitspaket 6: die drei Stellen fielen bisher uneinheitlich zurueck)."""
-    p = cfg_pfad or (ROOT / "config.yaml")
+    """Bilder-Ordner aus derselben Mischung wie die App: config.yaml, und daneben, falls
+    vorhanden, eine config.local.yaml darueber (wf.config.load_config). Standard data/images.
+
+    K1 (Schlusspruefung B2, 25.09.2026): bisher las dieser Zubringer config.yaml direkt per PyYAML
+    und ignorierte config.local.yaml - dort liegen seit Arbeitspaket 7 die eigenen Einstellungen
+    (wf/config.py), die App speicherte also woanders, als der Zubringer suchte. Der Docstring hier
+    behauptete Gleichlauf mit der App, ohne ihn zu haben.
+
+    cfg_pfad zeigt auf eine eigene config.yaml; die config.local.yaml im selben Ordner gilt dann
+    automatisch mit (wie bei load_config(path)). Ohne PyYAML, ohne Datei oder bei kaputter
+    config.yaml: wie bisher kein Absturz, Rueckfall auf data/images. Eine kaputte config.local.yaml
+    waere fuer die App ein Startabbruch (whisperflow._load_config_or_explain); fuer einen
+    Zubringer ist das zu viel Reaktion - eine Zeile auf stderr, dann gilt config.yaml allein."""
     ziel = "data/images"
     try:
-        import yaml
-        cfg = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-        ziel = ((cfg.get("snip") or {}).get("folder") or ziel)
-    except Exception:  # noqa: BLE001  (ohne yaml/Datei bleibt der Standard)
-        pass
+        cfg_mod = _config_modul()
+    except Exception:  # noqa: BLE001  (z. B. kein PyYAML installiert -> Standard bleibt)
+        cfg_mod = None
+    if cfg_mod is not None:
+        try:
+            cfg = cfg_mod.load_config(cfg_pfad)
+            ziel = ((cfg.get("snip") or {}).get("folder") or ziel)
+        except cfg_mod.ConfigError as e:
+            if str(e).startswith(cfg_mod.LOCAL_NAME):
+                print(f"WARNING: {e}", file=sys.stderr)
+                try:
+                    cfg = cfg_mod.load_config(cfg_pfad, local=False)
+                    ziel = ((cfg.get("snip") or {}).get("folder") or ziel)
+                except Exception:  # noqa: BLE001  (config.yaml dann ebenfalls kaputt)
+                    pass
+            # config.yaml selbst kaputt: wie bisher still der Standard
+        except Exception:  # noqa: BLE001  (z. B. Datei fehlt)
+            pass
     d = Path(ziel)
     return d if d.is_absolute() else (ROOT / d)
 

@@ -259,6 +259,23 @@ def test_standardpfad_nimmt_local_config_path(tmp_path, monkeypatch):
     assert cfg["_local"]["changed"] == ["llm.model"]
 
 
+def test_load_config_local_false_ueberspringt_config_local_yaml(tmp_path):
+    """K1 (Schlusspruefung B3, 25.09.2026): eine Hilfe fuer Pruefungen, die einen AUSGELIEFERTEN
+    Standardwert sehen wollen (z. B. stt.model in selftest.py), nicht die eigene Mischung -
+    dokumentierte persoenliche Einstellungen (README) sollen sie nicht rot faerben."""
+    lokal = 'hotkey:\n  key: "f8"\n'
+    cfg = config.load_config(_paar(tmp_path, lokal), local=False)
+    assert cfg["hotkey"] == {"key": "ctrl_r", "mode": "hold"}   # unveraendert, nicht "f8"
+    assert "_local" not in cfg
+
+
+def test_load_config_local_false_ohne_lokale_datei_gleiches_ergebnis(tmp_path):
+    """local=False aendert nur, ob ueberhaupt nach config.local.yaml gesehen wird - ohne eine
+    solche Datei ist das Ergebnis wie bisher."""
+    pfad = _paar(tmp_path, None)
+    assert config.load_config(pfad, local=False) == config.load_config(pfad)
+
+
 def test_merge_veraendert_die_eingaben_nicht():
     basis = {"a": {"b": 1, "c": 2}}
     lokal = {"a": {"b": 5}}
