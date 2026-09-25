@@ -165,7 +165,8 @@ ui:
   discard_only_if_shorter_than_s: 0
   # Every delivered text is also appended to data/history.log (local only). The tray menu item
   # "Copy last text to clipboard" brings it back if the clipboard has been overwritten since.
-  # null = keep no history at all.
+  # null = keep no history at all. This does not affect data/app.log (written when the app runs
+  # without a console), which also holds parts of the dictated text; see the README, Privacy.
   history_file: "data/history.log"
   history_keep_days: 14
 
